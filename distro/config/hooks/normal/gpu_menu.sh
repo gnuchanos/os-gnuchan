@@ -7,8 +7,8 @@
 # system reads that word from /proc/cmdline while it boots and brings up the
 # matching driver.
 #
-#     Live System -> NVIDIA (new)     gnuchan.gpu=nvidia-new
-#     Live System -> NVIDIA (legacy)  gnuchan.gpu=nvidia-legacy
+#     Live System -> NVIDIA (new)     gnuchan.gpu=nvidia-new modprobe.blacklist=nouveau
+#     Live System -> NVIDIA (legacy)  gnuchan.gpu=nvidia-legacy modprobe.blacklist=nouveau
 #     Live System -> Radeon           gnuchan.gpu=amd
 #     Live System -> Intel            gnuchan.gpu=intel
 #
@@ -42,8 +42,8 @@ log() { printf '==> gpu-menu: %s\n' "$1"; }
 # per driver choice with the title and the kernel word swapped.
 GPU_MENU_AWK='
 BEGIN {
-    titles[1] = "Live System -> NVIDIA (new)";    params[1] = "gnuchan.gpu=nvidia-new"
-    titles[2] = "Live System -> NVIDIA (legacy)"; params[2] = "gnuchan.gpu=nvidia-legacy"
+    titles[1] = "Live System -> NVIDIA (new)";    params[1] = "gnuchan.gpu=nvidia-new modprobe.blacklist=nouveau"
+    titles[2] = "Live System -> NVIDIA (legacy)"; params[2] = "gnuchan.gpu=nvidia-legacy modprobe.blacklist=nouveau"
     titles[3] = "Live System -> Radeon";          params[3] = "gnuchan.gpu=amd"
     titles[4] = "Live System -> Intel";           params[4] = "gnuchan.gpu=intel"
     choices = 4

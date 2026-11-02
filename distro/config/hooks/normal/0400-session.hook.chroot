@@ -48,6 +48,24 @@ EOF
 chmod 0644 /etc/pam.d/gnuchandm /etc/pam.d/gnuchansl
 log "wrote /etc/pam.d/gnuchandm and /etc/pam.d/gnuchansl"
 
+# --- start audio in each user's systemd session ------------------------------
+
+# These are systemd --user units. Global enablement installs links for user
+# managers; it does not start PipeWire as a root/system service. PAM's
+# pam_systemd session (provided by libpam-systemd) creates the user's runtime
+# directory and starts their user manager when GnuChanDM opens the session.
+for unit in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+    if [ -f "/usr/lib/systemd/user/$unit" ] ||
+       [ -f "/lib/systemd/user/$unit" ]; then
+        :
+    else
+        log "ERROR: required user unit is missing: $unit"
+        exit 1
+    fi
+done
+systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
+log "enabled PipeWire, PulseAudio compatibility and WirePlumber for user sessions"
+
 # --- 2. the greeter owns the console -----------------------------------------
 
 [ -x /usr/local/bin/GnuChanDM ] ||

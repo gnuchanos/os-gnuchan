@@ -40,11 +40,11 @@
 #
 # AND IT ADDS THE GRAPHICS DRIVER ENTRIES, before anything else, so they are
 # there on a BIOS-only build and an EFI one alike. The menu gets one entry per
-# graphics driver - NVIDIA (new), NVIDIA (legacy), Radeon, Intel - and each is the
-# ISO's own first entry with a `gnuchan.gpu=` word appended to its kernel
-# command line. The live system reads that word while it boots and brings up
-# the matching driver, so the choice is made in the menu rather than by running
-# an installer afterwards.
+# graphics driver - NVIDIA (new), NVIDIA (legacy), Radeon, Intel - and each is
+# the ISO's own first entry with a `gnuchan.gpu=` word appended to its kernel
+# command line. NVIDIA entries also keep nouveau from binding in the initramfs;
+# the live selector verifies the requested module is active before saving any
+# persistent blacklist.
 #
 # WHERE THE FILES ARE. live-build runs a binary hook from inside the binary
 # tree, so ISOLINUX is at `isolinux/` and GRUB at `boot/grub/`. Older layouts

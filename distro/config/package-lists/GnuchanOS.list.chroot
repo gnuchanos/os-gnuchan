@@ -332,7 +332,17 @@ deluge
 deluge-gtk
 python3-libtorrent
 
-# --- the session's helpers: sound, a browser backend, the pointer theme ---
+# --- the session's audio stack ---
+# Explicit packages matter because live-build disables APT Recommends. The
+# PipeWire core and WirePlumber provide the per-user server and policy manager;
+# pipewire-pulse serves PulseAudio clients, and pipewire-alsa redirects ALSA
+# clients into the same user session.
+pipewire
+wireplumber
+pipewire-pulse
+pipewire-alsa
+
+# --- the session's helpers: a browser backend, the pointer theme ---
 alsa-utils
 xterm
 x11-apps
