@@ -8,12 +8,16 @@ POOL=/usr/share/gnuchanos/gpu-pool
 SELECTOR=/usr/local/sbin/gnuchan-gpu-select
 UNIT=gnuchan-gpu-select.service
 
-# The live-build hook tree carries this sibling alongside the hook.
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-SELECTOR_SOURCE=$SCRIPT_DIR/gnuchan-gpu-select.sh
+# live-build may run hooks from a temporary directory, so use the staged source
+# path. The sibling path remains useful when the hook is run manually.
+SELECTOR_SOURCE=/opt/gnuchanos/gnuchan-gpu-select.sh
 if [ ! -f "$SELECTOR_SOURCE" ]; then
-    log "ERROR: missing selector source $SELECTOR_SOURCE"
-    exit 1
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    SELECTOR_SOURCE=$SCRIPT_DIR/gnuchan-gpu-select.sh
+    if [ ! -f "$SELECTOR_SOURCE" ]; then
+        log "ERROR: missing selector source at /opt/gnuchanos/gnuchan-gpu-select.sh and $SELECTOR_SOURCE"
+        exit 1
+    fi
 fi
 install -d /usr/local/sbin
 install -m 0755 "$SELECTOR_SOURCE" "$SELECTOR"

@@ -90,6 +90,10 @@ GnuChanScreenShoot
 GnuChanSoftwareCenter
 GnuChanTop
 GnuChanSettings
+GnuChanWelcome
+GnuChanSound
+GnuChanDesktop
+GnuChanFileManager
 GCL
 GnuChanWM
 GnuChanDM
@@ -156,6 +160,8 @@ makefile = Path(repository) / "src" / "makefile.py"
 if not makefile.is_file():
     makefile = Path(repository) / "makefile.py"
 if not makefile.is_file():
+    if name in {"GnuChanSound", "GnuChanDesktop", "GnuChanFileManager"}:
+        raise SystemExit(0)
     raise SystemExit(f"test install: no makefile.py for {name}")
 
 text = makefile.read_text(encoding="utf-8")
@@ -296,6 +302,24 @@ prepare_gcl_tree() {
 
 install_one() {
     name="$1"
+    case "$name" in
+        GnuChanSound)
+            ( cd "$WORK/$name" && PREFIX=/usr/local sh ./install.sh install )
+            return $?
+            ;;
+        GnuChanDesktop)
+            ( cd "$WORK/$name" && sh ./install.sh )
+            return $?
+            ;;
+        GnuChanFileManager)
+            ( cd "$WORK/$name" && sh ./install.sh )
+            return $?
+            ;;
+        GnuChanWelcome)
+            ( cd "$WORK/$name" && sh ./install.sh )
+            return $?
+            ;;
+    esac
     if [ "$name" = "GCL" ]; then
         prepare_gcl_tree "$WORK/$name"
     fi
@@ -346,7 +370,9 @@ main() {
                 GnuChanTerm|GnuChanFetch|GnuChanRunner|GnuChanWifi|\
                 GnuChanNetworkManager|GnuChanDock|GnuChanBrowser|GnuChanSS|\
                 GnuChanLockScreen|GnuChanNotification|GnuChanScreenShoot|\
-                GnuChanSoftwareCenter|GnuChanTop|GnuChanSettings|GCL|\
+                GnuChanSoftwareCenter|GnuChanTop|GnuChanSettings|\
+                GnuChanWelcome|GnuChanSound|GnuChanDesktop|\
+                GnuChanFileManager|GCL|\
                 GnuChanWM|GnuChanDM)
                     selected="$selected $requested"
                     ;;
@@ -411,7 +437,7 @@ main() {
         if install_one "$name"; then
             installed="$installed $name"
         else
-            warn "$name: makefile.py install failed; see its output above"
+            warn "$name installation failed; see its output above"
             failed="$failed $name"
             # Check if this is a critical program
             if echo "$CRITICAL_PROGRAMS" | grep -q "\b$name\b"; then

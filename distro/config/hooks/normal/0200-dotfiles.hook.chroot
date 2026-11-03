@@ -121,7 +121,7 @@ fi
 # --- the desktop wallpaper ---------------------------------------------------
 
 # GnuChanWM reads its wallpaper from ~/.config/GnuChanWM/bg.png (see the shipped
-# GnuChanWM.py), and the image was coming up with the flat desktop colour
+# GnuChanWM.conf), and the image was coming up with the flat desktop colour
 # because nothing ever put a picture there. assets/bg.png is the repository's
 # own wallpaper, so it is copied to exactly the path the configured script
 # names.

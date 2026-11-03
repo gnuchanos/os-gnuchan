@@ -189,6 +189,8 @@ rsync
 # --- what the programs link against ---
 libx11-dev
 libxft-dev
+libgtk-3-dev
+libglib2.0-dev
 libfreetype-dev
 libxcursor-dev
 libimlib2-dev
@@ -341,6 +343,12 @@ pipewire
 wireplumber
 pipewire-pulse
 pipewire-alsa
+pipewire-bin
+
+# GnuChanDesktop is a Python/Tk X11 panel; feh applies wallpaper images while
+# xrandr and xsetroot are provided by x11-xserver-utils above.
+python3-tk
+feh
 
 # --- the session's helpers: a browser backend, the pointer theme ---
 alsa-utils

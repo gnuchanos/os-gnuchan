@@ -601,9 +601,12 @@ rm -f "$TARGET/etc/sudoers.d/90-gnuchanos-live"
 # the entry that starts it at login is removed - the XDG one and the session's
 # own list, which is the one GnuChanWM actually reads.
 rm -f "$TARGET/etc/xdg/autostart/gnuchanos-installer.desktop"
-if [ -f "$TARGET/home/$NEWUSER/.config/GnuChanWM/GnuChanWM.py" ]; then
-    sed -i '/gnuchanos-installer/d' "$TARGET/home/$NEWUSER/.config/GnuChanWM/GnuChanWM.py"
-fi
+WM_CONFIG_DIR="$TARGET/home/$NEWUSER/.config/GnuChanWM"
+for WM_CONFIG in "$WM_CONFIG_DIR/GnuChanWM.conf" "$WM_CONFIG_DIR/GnuChanWM.py"; do
+    if [ -f "$WM_CONFIG" ]; then
+        sed -i '/^[[:space:]]*"gnuchanos-installer",[[:space:]]*$/d' "$WM_CONFIG"
+    fi
+done
 rm -f "$TARGET/usr/local/bin/gnuchanos-installer"
 
 # Give this installation its own SSH identity and make the daemon available

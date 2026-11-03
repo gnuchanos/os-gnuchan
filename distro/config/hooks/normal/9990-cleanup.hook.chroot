@@ -77,6 +77,20 @@ fi
     { log "ERROR: GnuChanWM is missing from the finished image"; exit 1; }
 [ -x /usr/local/bin/GnuChanDM ] ||
     { log "ERROR: GnuChanDM is missing from the finished image"; exit 1; }
+[ -x /usr/local/bin/GnuChanDesktop ] ||
+    { log "ERROR: GnuChanDesktop is missing from the finished image"; exit 1; }
+[ -x /usr/local/bin/gnuchan-desktop-panel ] ||
+    { log "ERROR: the GnuChan Desktop panel launcher is missing"; exit 1; }
+[ -x /usr/local/bin/gnuchan-welcome ] ||
+    { log "ERROR: GnuChanWelcome is missing from the finished image"; exit 1; }
+[ -f /usr/local/share/applications/gnuchan-welcome.desktop ] ||
+    { log "ERROR: the GnuChanWelcome menu entry is missing"; exit 1; }
+[ -f /etc/xdg/autostart/gnuchan-welcome.desktop ] ||
+    { log "ERROR: the GnuChanWelcome first-run autostart entry is missing"; exit 1; }
+[ -f /home/gnuchanos/.config/GnuChanWelcome/welcome.conf ] ||
+    { log "ERROR: the GnuChanWelcome configuration is missing"; exit 1; }
+[ -f /usr/share/applications/gnuchan-desktop-panel.desktop ] ||
+    { log "ERROR: the GnuChan Desktop menu entry is missing"; exit 1; }
 [ -f /usr/share/xsessions/gnuchanwm.desktop ] ||
     { log "ERROR: the GnuChanWM session entry is missing"; exit 1; }
 [ -x /home/gnuchanos/.local/bin/gcl ] ||

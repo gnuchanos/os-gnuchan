@@ -67,9 +67,9 @@ restore_open_driver() {
 install_from_pool() {
     package_dir=$1
     set --
-    for package in "$POOL/common/"*.deb "$POOL/$package_dir/"*.deb; do
-        [ -f "$package" ] || continue
-        set -- "$@" "$package"
+    for package_file in "$POOL/common/"*.deb "$POOL/$package_dir/"*.deb; do
+        [ -f "$package_file" ] || continue
+        set -- "$@" "$package_file"
     done
     [ "$#" -gt 0 ] || return 1
 

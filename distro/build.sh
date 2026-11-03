@@ -53,6 +53,17 @@ die() { printf '  ! %s\n' "$1" >&2; exit 1; }
 
 # --- early validation ---------------------------------------------------------
 
+has_staged_sibling_checkout() {
+    case "$1" in
+        GnuChanSound|GnuChanDesktop|GnuChanFileManager|GnuChanWelcome)
+            [ -d "$OS_ROOT/../$1" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Check program repositories before starting the long build
 # FAIL EARLY if any repository is not accessible
 validate_program_repos() {
@@ -71,6 +82,10 @@ validate_program_repos() {
     GnuChanSS
     GnuChanLockScreen
     GnuChanNotification
+    GnuChanWelcome
+    GnuChanSound
+    GnuChanDesktop
+    GnuChanFileManager
     GnuChanTop
     GnuChanSettings
     GCL
@@ -94,7 +109,7 @@ validate_program_repos() {
         fi
         
         # Check local repository first
-        if [ -d "$HERE/repos/$prog" ]; then
+        if [ -d "$HERE/repos/$prog" ] || has_staged_sibling_checkout "$prog"; then
             note "✓ $prog: Local repository found"
             local_repos_count=$((local_repos_count + 1))
         else
@@ -208,6 +223,8 @@ case "$FS_TYPE" in
         # confusing stale build output with the image produced by this run.
         tar -C "$OS_ROOT" --exclude=./distro/_build --exclude=./.git -cf - . \
             | tar -C "$RELOCATE" -xf -
+        sh "$HERE/stage-program-checkouts.sh" "$OS_ROOT" \
+            "$RELOCATE/distro/repos"
         if [ -d "$OS_ROOT/../GnuChanDM/src" ] &&
            [ -f "$OS_ROOT/../GnuChanDM/src/makefile.py" ] &&
            [ ! -d "$RELOCATE/distro/repos/GnuChanDM" ]; then
@@ -395,6 +412,10 @@ if [ -d "$HERE/repos" ]; then
     cp -a "$HERE/repos" "$STAGE/"
     note "staged local program checkouts from $HERE/repos"
 fi
+# Use the sibling checkouts of the newly-added applications when present, just
+# as this build does for the local WM and DM. Otherwise GnuChanPrograms.sh
+# fetches their repositories at build time.
+sh "$HERE/stage-program-checkouts.sh" "$OS_ROOT" "$STAGE/repos"
 # Use the sibling checkout when present so local DM fixes are built into this
 # ISO instead of silently replaced by the remote default branch.
 DM_CHECKOUT="$OS_ROOT/../GnuChanDM"
@@ -419,6 +440,11 @@ fi
 # staged with everything else: the hook that runs it looks for it under
 # /opt/gnuchanos, beside the trees it installs from.
 cp -a "$HERE/GnuChanPrograms.sh" "$STAGE/"
+# The GPU hook runs from live-build's temporary hook directory, which is not
+# guaranteed to retain sibling files. Stage its runtime selector at a stable
+# path in the image overlay so the hook can install it before cleanup.
+cp -a "$HERE/config/hooks/normal/gnuchan-gpu-select.sh" \
+    "$STAGE/gnuchan-gpu-select.sh"
 # The install-software hook uses this same lid policy as the test updater.
 cp -a "$OS_ROOT/distro/config/systemd/99-gnuchanos-lid.conf" "$STAGE/"
 # The installer is this tree's own and is staged the same way, whole: its X11

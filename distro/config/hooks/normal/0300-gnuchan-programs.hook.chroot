@@ -14,8 +14,8 @@
 # need an incomplete image for offline work.
 #
 # SUDO_USER is set to the live user, and that is not cosmetic. Several of these
-# installers put a settings script (GnuChanTerm.py, GnuChanWM.py, GnuChanDM.py)
-# under the home of the account that ran sudo, read back from SUDO_USER, and
+# installers put a settings file under the home of the account that ran sudo,
+# read back from SUDO_USER, and
 # chown it to that account. Under a plain root build SUDO_USER is unset, so
 # every one of those files would land in /root and the live session - which logs
 # in as `gnuchanos` - would read none of them, falling back to the built-in
@@ -52,6 +52,47 @@ else
     log "ERROR: no $PROGRAMS; the Gnuchan programs cannot be installed"
     exit 1
 fi
+
+# GnuChanWM uses its own autostart list instead of the XDG autostart directory.
+# Keep the Welcome guide there for both live sessions and installed systems;
+# its own first-run config makes later launches exit without opening a window.
+WM_CONFIG="$LIVE_HOME/.config/GnuChanWM/GnuChanWM.conf"
+if [ ! -f "$WM_CONFIG" ]; then
+    log "ERROR: GnuChanWM configuration is missing: $WM_CONFIG"
+    exit 1
+fi
+python3 - "$WM_CONFIG" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+match = re.search(
+    r"(?ms)^([ \t]*gcl_autostart\.all\s*=\s*\[)(.*?)(^[ \t]*\])",
+    text,
+)
+if match is None:
+    raise SystemExit(f"error: no gcl_autostart.all list in {path}")
+
+body = match.group(2)
+entry = '"gnuchan-welcome --first-run"'
+if not re.search(r'(?m)^[ \t]*"gnuchan-welcome --first-run"\s*,?[ \t]*(?:#.*)?$', body):
+    body += f"    {entry},\n"
+    text = text[:match.start(2)] + body + text[match.end(2):]
+    path.write_text(text, encoding="utf-8")
+PY
+chown "$LIVE_USER":"$(id -gn "$LIVE_USER")" "$WM_CONFIG"
+log "added the first-run Welcome guide to the desktop session"
+WELCOME_CONFIG="$LIVE_HOME/.config/GnuChanWelcome/welcome.conf"
+install -d "$LIVE_HOME/.config/GnuChanWelcome"
+if [ ! -f "$WELCOME_CONFIG" ]; then
+    printf '%s\n' \
+        '# GnuChan Welcome first-run state' \
+        'FirstRunComplete = false' > "$WELCOME_CONFIG"
+fi
+chown "$LIVE_USER":"$(id -gn "$LIVE_USER")" "$WELCOME_CONFIG"
+log "seeded Welcome settings at $WELCOME_CONFIG"
 
 # --- the live user owns what was written for them ----------------------------
 

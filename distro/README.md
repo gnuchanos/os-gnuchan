@@ -44,8 +44,13 @@ the source tree.
   * **The Gnuchan programs** — each lives in its own repository under the
     `gnuchanos` account and is fetched and installed by `GnuChanPrograms.sh`:
     the image is built by cloning them and running each one's own `makefile.py`,
-    so nothing about how a program is built is repeated here. That script holds
-    the one list of what the programs are and the order they install in. The
+    or its repository install script where it has no Python makefile. That
+    script holds the one list of what the programs are and the order they
+    install in, including GnuChanWelcome, GnuChanSound, GnuChanDesktop and
+    GnuChanFileManager. Local checkouts under `distro/repos/` and the Sound,
+    Desktop, FileManager and Welcome sibling projects are staged before any
+    network fetch, including when a Windows-mounted source tree is relocated
+    to Linux for the ISO build. The
     distro build is strict: a program that cannot be fetched or built fails the
     image build instead of shipping a desktop with missing components. Set
     `GNUCHAN_PROGRAMS_STRICT=0` only when deliberately building an incomplete
@@ -168,6 +173,10 @@ used for the ISO in preference to the remote DM repository. An explicit
 checkout at `distro/repos/GnuChanDM` takes precedence over the sibling
 checkout. This lets local display-manager fixes be tested in a WSL ISO before
 they are published.
+The Sound, Desktop and FileManager sibling checkouts use the same staging
+helper. Run `sh tests/test-desktop-integration.sh` from this directory to
+exercise the Desktop checkout staging, installation, and menu launcher without
+building the full ISO.
 
 ### Building an image without a token
 

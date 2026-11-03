@@ -81,10 +81,16 @@ python3 "$SOURCE/src/makefile.py" install
 # own GCL configuration. Add the installer there so the live ISO opens it as
 # soon as the desktop session starts. The installer removes this entry before
 # configuring the installed system.
-WM_CONFIG="$LIVE_HOME/.config/GnuChanWM/GnuChanWM.py"
+WM_CONFIG="$LIVE_HOME/.config/GnuChanWM/GnuChanWM.conf"
 if [ ! -f "$WM_CONFIG" ]; then
-    log "ERROR: GnuChanWM configuration is missing: $WM_CONFIG"
-    exit 1
+    LEGACY_WM_CONFIG="$LIVE_HOME/.config/GnuChanWM/GnuChanWM.py"
+    if [ -f "$LEGACY_WM_CONFIG" ]; then
+        WM_CONFIG=$LEGACY_WM_CONFIG
+        log "using legacy GnuChanWM settings: $WM_CONFIG"
+    else
+        log "ERROR: GnuChanWM configuration is missing: $WM_CONFIG"
+        exit 1
+    fi
 fi
 python3 - "$WM_CONFIG" <<'PY'
 import re
@@ -93,9 +99,6 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-lid_setting = "OnLidCloseSuspend=True"
-if lid_setting in text:
-    text = text.replace(lid_setting, "OnLidCloseSuspend=False")
 match = re.search(
     r"(?ms)^([ \t]*gcl_autostart\.all\s*=\s*\[)(.*?)(^[ \t]*\])",
     text,

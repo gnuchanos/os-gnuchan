@@ -500,8 +500,8 @@ def touchpad_devices(log: Log) -> list[str]:
     return found
 
 
-def apply_to_running_session(log: Log, settings: Settings) -> int:
-    """Push the settings into the running X server, returning how many failed.
+def apply_to_running_session(log: Log, settings: Settings) -> tuple[int, bool]:
+    """Push the settings into X, returning failures and whether a pad was found.
 
     Every property is set on its own so that one the pad does not have - a
     touchpad without middle button emulation, an old driver - is reported
@@ -511,20 +511,21 @@ def apply_to_running_session(log: Log, settings: Settings) -> int:
     xinput = xinput_path()
     if xinput is None:
         log.detail("xinput is not installed; the configuration applies at the next login")
-        return 0
+        return 0, False
     if session_type() == "wayland":
         log.detail("this is a Wayland session; xinput cannot reach it")
-        return 0
+        return 0, False
     if not os.environ.get("DISPLAY"):
         log.detail("DISPLAY is not set; the configuration applies at the next X session")
-        return 0
+        return 0, False
 
     devices = touchpad_devices(log)
     if not devices:
         log.detail("the running X server reports no touchpad")
-        return 0
+        return 0, False
 
     failures = 0
+    applied = False
     for device in devices:
         log.detail(f"applying to {device}")
         for name, arguments in settings.runtime_properties():
@@ -532,7 +533,9 @@ def apply_to_running_session(log: Log, settings: Settings) -> int:
             if status != 0:
                 failures += 1
                 log.detail(f"  {name}: not supported by this device")
-    return failures
+            else:
+                applied = True
+    return failures, applied
 
 
 def reset_running_session(log: Log) -> None:
@@ -945,9 +948,10 @@ def main(argv: list[str] | None = None) -> int:
     if not install_config(log, settings):
         return 1
 
+    applied_now = False
     if not args.no_apply:
         log.step("Applying to the running session")
-        apply_to_running_session(log, settings)
+        _, applied_now = apply_to_running_session(log, settings)
 
     log.step("Checking the result")
     problems = check_environment(log, settings)
@@ -956,9 +960,12 @@ def main(argv: list[str] | None = None) -> int:
     if session_type() == "wayland":
         log.note("Done, for X11 sessions. On this Wayland session the settings")
         log.note("above have to be made in the compositor itself.")
+    elif applied_now:
+        log.note("Done. The settings were applied to the running X session;")
+        log.note("the file makes them apply again at every login.")
     else:
-        log.note("Done. The settings are in force now; the file makes them apply")
-        log.note("again at every login, under any window manager or desktop.")
+        log.note("Done. The configuration is saved and applies at the next X")
+        log.note("session, under any window manager or desktop.")
     log.note("")
     log.note(f"Configuration: {CONFIG_FILE}")
     log.note(f"Remove it with: {SCRIPT_NAME} --uninstall")
