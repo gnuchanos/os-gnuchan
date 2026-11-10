@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=GnuChan Desktop
+Comment=Configure wallpaper and monitor layout
+Exec=/usr/local/bin/GnuChanDesktop
+TryExec=/usr/local/bin/GnuChanDesktop
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;DesktopSettings;
+StartupNotify=true
+Actions=ApplySaved;
+
+[Desktop Action ApplySaved]
+Name=Apply saved display settings
+Exec=/usr/local/bin/GnuChanDesktop --apply-saved
+OnlyShowIn=GNOME;KDE;XFCE;LXDE;MATE;Openbox;

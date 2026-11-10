@@ -1,0 +1,407 @@
+/*
+ * wm_frame.h — the title bar and the frame around every managed window.
+ *
+ * A window manager that only draws a border cannot be used: a window with no
+ * title bar cannot be moved, and a window that cannot be moved is stuck where
+ * it opened. Making one movable is the whole of this file.
+ *
+ * It is done by reparenting, which is what every real window manager does. The
+ * manager makes a frame window, puts the client inside it, and draws a title
+ * bar of its own above it. The client keeps believing it is a top-level window
+ * — the X server translates the coordinates — while what the user clicks and
+ * drags is the frame the manager owns.
+ *
+ *     root
+ *      └── frame          what is moved, dragged and drawn (override-redirect)
+ *           └── client    the program's window, reparented inside it
+ *
+ * The frame is override-redirect on purpose. The root redirects structure, so
+ * a normal window's map would come back to the manager as its own MapRequest
+ * and the manager would be talking to itself for ever; an override-redirect
+ * window is what the server maps without asking.
+ *
+ * Everything the frame draws goes into an off-screen copy first and is put on
+ * the window in one operation. Drawing straight to the window means the title
+ * bar is cleared, then partly redrawn, then finished — and a window being
+ * dragged or focused is being redrawn many times a second, so that order is
+ * seen as a flicker. See wm_frame.c for what fills the copy.
+ */
+#ifndef GNUCHANWM_FRAME_H
+#define GNUCHANWM_FRAME_H
+
+#include <X11/Xlib.h>
+
+#include "wm_module.h"
+
+/* The struct WmCore lives in wm_core.h, which includes this file, so a frame
+   points back at the core through a forward declaration rather than by the two
+   headers including each other. */
+typedef struct WmCore WmCore;
+
+/* The chrome every window shares. Constants, not per-window choices: a title
+   bar that is a different height on every window is not one desktop. */
+#define WM_TITLE_HEIGHT 22
+
+/* The border width a frame is given when the script asks for none. The frame
+   keeps its own copy in WmFrame.border, taken from the desktop's style, so a
+   script that called gcl_Window.set_window_border_width() gets the width it
+   asked for and this is only the answer for a session that never did. */
+#define WM_FRAME_BORDER 2
+
+/* The widest that border may be drawn. A strip wider than the title bar would
+   be a border with a window on it, so a script asking for more is reported and
+   held here. */
+#define WM_FRAME_BORDER_MAX 8
+#define WM_BUTTON_SIZE 16
+#define WM_BUTTON_GAP 6
+#define WM_MAX_FRAMES 128
+
+/* The side of the square a window's icon is drawn at on the bar. It has to
+   fit inside the bar with a margin; the bar's own height decides the room. */
+#define WM_ICON_SIZE 16
+
+/* The biggest side of an icon kept from _NET_WM_ICON. A client may publish a
+   256x256 image; the strip wants the largest one still no bigger than a bar
+   icon, because an icon scaled down a little reads as the program and one
+   thrown away reads as nothing. */
+#define WM_ICON_MAX_SIDE 64
+
+/* The most 32-bit cards read from _NET_WM_ICON.
+ *
+ * This is the whole cost of the read, because XGetWindowProperty waits for the
+ * property as well as asking for it: on a 64-bit server every card comes back
+ * as one unsigned long, so this many cards is this many megabytes pulled into
+ * the event loop in a single call — a call the manager makes while a client is
+ * opening a window, and nothing else is being read or drawn for its duration.
+ *
+ * The ceiling is therefore sized to what a bar icon is made from and no more:
+ * a 16, 32, 48 and 64 pixel icon together are about ten thousand cards, so
+ * this holds several times that. A client that publishes more than this is a
+ * client whose icon is not going on the bar anyway, and it is better that the
+ * manager stops reading than that it stops working. */
+#define WM_ICON_MAX_CARDS 32768
+
+/* The three buttons, in the order they are drawn from the right edge inwards:
+   close is rightmost, then maximise, then minimise. A count and an order, so
+   the drawing loop, the hit test and the geometry all read the same table. */
+typedef enum WmFrameButton {
+    WM_BUTTON_CLOSE = 0,
+    WM_BUTTON_MAXIMIZE,
+    WM_BUTTON_MINIMIZE,
+    WM_BUTTON_COUNT,
+} WmFrameButton;
+
+/* Which sides a held Alt+right-button moves. Bits rather than values, because
+   a press near a corner is two of them at once and a drag from one has to move
+   both. A press that is near no side gets the bottom and the right, which is
+   the direction a hand drags when it wants a window bigger. */
+enum {
+    WM_RESIZE_LEFT   = 1 << 0,
+    WM_RESIZE_RIGHT  = 1 << 1,
+    WM_RESIZE_TOP    = 1 << 2,
+    WM_RESIZE_BOTTOM = 1 << 3,
+};
+
+/* How close to a side a press has to be to take that side rather than the
+   window's body. The frame's own border is 2 pixels, which is far too thin to
+   aim at; this is the invisible band every window manager gives a resize. */
+#define WM_RESIZE_GRAB 6
+
+/* The smallest a client may be dragged to. A window smaller than this is a
+   title bar with nothing under it: the three buttons are 16 pixels each and
+   would be wider than the window they sit on. */
+#define WM_RESIZE_MIN_WIDTH 64
+#define WM_RESIZE_MIN_HEIGHT 48
+
+/* One managed window, as the desktop holds it. */
+typedef struct WmFrame {
+    Window frame;        /* the manager's window: moved, drawn, dragged      */
+    Window client;       /* the program's window, reparented inside it       */
+
+    int x, y;            /* where the frame sits on the screen               */
+
+    /* How thick the border drawn around this window is. It is taken from the
+       desktop's style when the frame is made — the script sets it with
+       gcl_Window.set_window_border_width() — and kept per frame because the
+       geometry is computed from it and the frame has to stay consistent with
+       itself while it is dragged. wm_frame_apply_border() puts every open
+       frame back in step when the script changes it. */
+    int border;
+
+    int client_width;    /* the client's size, which the frame wraps         */
+    int client_height;
+
+    int dragging;        /* 1 while the title bar or body is held            */
+    int drag_pointer_x;  /* where the pointer was when the drag began        */
+    int drag_pointer_y;
+    int drag_frame_x;    /* where the frame was when the drag began          */
+    int drag_frame_y;
+
+    /* The same four things for a resize: which sides are moving, where the
+       pointer was when it began, and the frame's own numbers at that moment.
+       A resize is measured from where it began rather than from the last
+       motion, so a drag that is taken back undoes itself exactly instead of
+       accumulating rounding. */
+    int resizing;        /* 1 while Alt+right-button is held                 */
+    int resize_edges;    /* which sides move; WM_RESIZE_* bits               */
+    int resize_pointer_x;
+    int resize_pointer_y;
+    int resize_x, resize_y;
+    int resize_width, resize_height;
+
+    /* The two states the title bar's buttons put a window in. A minimised
+       window is unmapped rather than iconified: there is no task list on this
+       desktop to bring it back from, so the way back is the switcher key, and
+       an unmapped frame is what that key restores. */
+    int minimized;       /* 1 while the frame is put away                    */
+    int maximized;       /* 1 while the client fills the screen              */
+    int workspace;       /* which desktop this window is on (wm_workspace.h) */
+
+    /* 1 while the window is drawn in the "just moved" border colour — set by
+       wm_workspace_move() when Super+Shift+N sends the window to another desk,
+       and cleared by wm_focus_set() the next time the window is focused.
+     *
+     * It exists so a hand that has sent three windows to three desks can still
+     * tell which three they were. Without it the only sign was that the window
+     * had gone, and by the time the user followed it there was nothing on
+     * screen to say whether this was the one they sent or one that had been
+     * there all along. The colour itself is gcl_Window's
+     * set_moved_window_border_color, resolved into WmStyle.border_moved.
+     *
+     * It is cleared on focus rather than on a timer: the mark means "you have
+     * not seen this window since you sent it", and focusing it is exactly the
+     * act of having seen it. */
+    int moved;
+
+    /* The size the client's CONTENT is drawn at. It is kept as its own number
+       because the frame's client_width is what is SHOWN, and the two can part
+       company: a program that ignores a resize has drawn at its own size while
+       the frame holds a different one, so the client's own size cannot be
+       asked for — it would report what it was told, not what it painted.
+
+       A window now opens at the size it asked for, even one larger than the
+       screen, so for a window that has not resized itself since, this equals
+       client_width. It still earns its place for a window that HAS resized
+       itself: wm_frame_sync() updates this from the client's own attributes,
+       and it is the number scaling puts the window back to. See
+       wm_frame_toggle_scaling(). */
+    int natural_width;
+    int natural_height;
+
+    /* 1 while the client's content is drawn scaled into the frame rather than
+       by the client itself — see wm_compositor.h. While it is set the client
+       is NOT resized to the frame and is not told it was, because the whole
+       point is that it goes on drawing at its own size; only the picture of
+       it is fitted to the frame. */
+    int scaled;
+
+    /* 1 while the window is in the EWMH fullscreen STATE. Set by the EWMH
+       fullscreen request, which is the one thing a window manager must speak
+       for a Direct3D game to be playable; see wm_frame_set_fullscreen() for
+       what happens without it, which is a picture that slides up and down for
+       ever.
+
+       !! CHROME IS STILL KEPT WHILE THIS IS SET — do not "optimise" this flag
+       into dropping the title bar and border or moving the client to (0,0).
+       An earlier version did exactly that and the user could no longer grab or
+       close the window ("title bar ve border gorunmuyor"). frame_border_of()
+       and frame_title_of() ALWAYS return the real chrome; neither reads this
+       flag. What the flag actually does is: refuse the client's own geometry
+       changes (wm_manage.c: manage_configure) and pin the container to the
+       resolution the game asked for (wm_frame_sync, fullscreen_width/height).
+       The window stays a container with its chrome, its size set by the game's
+       chosen resolution. */
+    int fullscreen;
+
+    /* The resolution a fullscreen client ASKED for, taken from the display
+       mode it tried to change to (see wm_randr.c). It is the one place a Wine
+       game states how large it wants to be: a Direct3D game changes the
+       display mode to its own resolution, and that resolution — not the
+       screen, and not the screen-sized window Wine makes afterwards — is what
+       the container is sized to. Zero when the client asked for none, in
+       which case the container keeps the size it has.
+
+       wm_frame_sync() pins the container to this size and ignores the client's
+       own report while it is set, which is what stops Wine's screen-sized
+       outer window from stretching the container back out to the screen and
+       leaving the game in a small rectangle of black. */
+    int fullscreen_width;
+    int fullscreen_height;
+
+    /* Where the frame was before it was maximised, so the same button puts it
+       back. Only meaningful while maximized is set. */
+    int restore_x, restore_y;
+    int restore_width, restore_height;
+
+    /* The off-screen copy every drawing goes into, and the size it currently
+       holds. Redrawing a window many times a second straight to the screen is
+       what flickers; drawing here and copying once is what does not. */
+    Pixmap buffer;
+    int buffer_width, buffer_height;
+
+    int has_name;        /* whether the client named itself                  */
+    char name[160];
+
+    /* The window's icon, read from _NET_WM_ICON and kept as a colour pixmap
+       plus a 1-bit mask, so it can be put on the bar over any background
+       rather than carrying its own rectangle of colour. icon_tried is what
+       keeps a client that published no icon from being asked again on every
+       repaint; icon_side is the side both pixmaps were made at, and icon_ok is
+       set once they hold something worth drawing. */
+    Pixmap icon_source;
+    Pixmap icon_mask;
+    int icon_side;
+    int icon_tried;
+    int icon_ok;
+} WmFrame;
+
+/* --- the table ------------------------------------------------------------ */
+
+WmFrame *wm_frame_find(WmCore *core, Window client);
+WmFrame *wm_frame_find_by_frame(WmCore *core, Window frame);
+
+/* --- the frame ------------------------------------------------------------ */
+
+/* Take a client into a frame: make the frame, reparent the client into it, map
+   both and draw the bar. NULL when the client already has a frame, or is one
+   that asks not to be managed. */
+WmFrame *wm_frame_create(WmCore *core, Window client);
+
+/* Put the frame at a new place on the screen. */
+void wm_frame_move(WmCore *core, WmFrame *frame, int x, int y);
+
+/* Resize the frame so it wraps a client of this size, and tell the client what
+   it got. The client's position never changes: the bar is always above it. */
+void wm_frame_resize(WmCore *core, WmFrame *frame, int width, int height);
+
+/* Put the frame above the other windows. */
+void wm_frame_raise(WmCore *core, WmFrame *frame);
+
+/* Drop the frame. With client_gone the client is already destroyed and is not
+   touched; otherwise it is put back on the root first, so a program that
+   outlives the window manager is not left inside a window nobody owns. */
+void wm_frame_destroy(WmCore *core, WmFrame *frame, int client_gone);
+
+/* --- acting on a window --------------------------------------------------- */
+
+/* Ask the client to close through WM_DELETE_WINDOW. A client that does not
+   speak the protocol has no way to be asked and is killed, which is what every
+   window manager does with one. */
+void wm_frame_close(WmCore *core, WmFrame *frame);
+
+/* Put the frame away, and bring it back. A minimised frame is unmapped; the
+   switcher key restores it, because this desktop has no task list to click it
+   in. */
+void wm_frame_minimize(WmCore *core, WmFrame *frame);
+void wm_frame_restore(WmCore *core, WmFrame *frame);
+
+/* Fill the screen with the client, or put it back where it was. It is the
+   client that is resized, not the frame: a maximised window keeps its title
+   bar, so its buttons stay reachable. */
+void wm_frame_maximize(WmCore *core, WmFrame *frame);
+
+/* Bring a window to the front and give it the keyboard, restoring it first if
+   it was minimised. The switcher key and the focus module both go through this,
+   so it is the one place that says what "go to this window" means. */
+void wm_frame_activate(WmCore *core, WmFrame *frame);
+
+/* Read the client's name again and redraw the bar. */
+void wm_frame_update_name(WmCore *core, WmFrame *frame);
+
+/* --- the window's icon (wm_icon.c) ---------------------------------------- */
+
+/* Read the client's icon from _NET_WM_ICON and keep it. Called when the frame
+   is made; a client with no icon is asked once and not again. */
+void wm_frame_read_icon(WmCore *core, WmFrame *frame);
+
+/* Drop whatever icon a frame holds. Called when the frame is destroyed and,
+   through wm_frame_read_icon, before a new one is read. */
+void wm_frame_free_icon(WmCore *core, WmFrame *frame);
+
+/* Put the frame's icon on a drawable at (x, y), sized to `side` pixels.
+   Returns 1 when something was drawn and 0 when the client has no icon, so
+   the caller can fall back to something of its own. */
+int wm_frame_draw_icon(WmCore *core, WmFrame *frame, Drawable target,
+                       int x, int y, int side);
+
+/* Write the client's _NET_WM_DESKTOP to the workspace the frame is on. Read by
+   a dock or a pager that wants one workspace's windows at a time; without it
+   such a program cannot tell which desk a window belongs to and shows them all
+   at once. Called when a frame is created and whenever it is moved between
+   workspaces. */
+void wm_frame_publish_desktop(WmCore *core, WmFrame *frame);
+
+/* Bring the frame back in step with a client that moved or resized itself.
+   Called when the server reports the client changed. */
+void wm_frame_sync(WmCore *core, WmFrame *frame);
+
+/* Fit the window's content into the frame, or stop doing it.
+ *
+ * On: the client is put back to the size it asked for when it opened, which is
+ * the size its content is drawn at, and its pixels are taken from the server
+ * and drawn scaled into whatever the frame is. The frame can then be dragged
+ * smaller and nothing is hidden — the whole of the content is still there,
+ * drawn smaller.
+ *
+ * Off: the client is given the frame's size again and drawn by the server, as
+ * every other window is.
+ *
+ * Nothing happens when the server cannot do it; the frame is left alone and
+ * the window behaves exactly as it did before. */
+void wm_frame_toggle_scaling(WmCore *core, WmFrame *frame);
+int  wm_frame_is_scaled(const WmFrame *frame);
+
+/* --- fullscreen: the EWMH state, and why a window manager must speak it -----
+
+   Take the whole screen, or give it back. `on` is not toggled by a second
+   press: a client asks for one or the other, and a request for the state it is
+   already in does nothing.
+
+   On: the window is raised and focused and the EWMH state is answered. THE
+   CHROME IS KEPT — the title bar and the border are NOT dropped, and the
+   client is NOT moved to (0,0). A fullscreen window here is a CONTAINER the
+   size of the resolution the game asked for, with its chrome intact, so it
+   can still be dragged and closed.
+
+   !! BU ACIKLAMA ESKI VE YANLISTI — DUZELTILDI. Once burada "the title bar
+   and the border are dropped, the client is given the whole of the screen at
+   (0,0)" yaziyordu. Kod bunu YAPMIYOR ve YAPMAMALI: chrome dusurulurse
+   kullanici pencereyi tutup TASIYAMAZ ve KAPATAMAZ ("title bar ve border
+   gorunmuyor" hatasi), client'i (0,0)'a koymak da frame'in uzerine cizip
+   chrome'u tamamen orter. Bu yuzden chrome HER pencerede (fullscreen dahil)
+   korunur. Bu doc'u tekrar "chrome dusurulur / pencere (0,0)'a konur" diye
+   DEGISTIRME — o degisiklik hatayi geri getirir. !!
+
+   Off: the window returns to the size and place it had, held to the desktop
+   like any other window.
+
+   A window manager that does NOT speak this is one that Direct3D games fight:
+   see wm_frame_set_fullscreen() in wm_frame.c. */
+void wm_frame_set_fullscreen(WmCore *core, WmFrame *frame, int on);
+int  wm_frame_is_fullscreen(const WmFrame *frame);
+
+/* Give a fullscreen window the resolution its client asked for by changing the
+   display mode. Called by wm_randr.c the moment a client changes the mode,
+   before the mode is put back: `width` and `height` are the resolution the
+   client wanted, which becomes the size of the container. A window that is not
+   fullscreen is left alone. */
+void wm_frame_set_fullscreen_size(WmCore *core, int width, int height);
+
+/* --- drawing -------------------------------------------------------------- */
+
+void wm_frame_draw(WmCore *core, WmFrame *frame);
+void wm_frame_draw_all(WmCore *core);
+
+/* Take the border width from the desktop's style again and put every frame's
+   geometry right with it. Called by wm_config_apply() after a reload, so a
+   script that changed set_window_border_width() is seen on the windows that
+   are already open rather than only on the next one. */
+void wm_frame_apply_border(WmCore *core);
+
+/* --- the module ----------------------------------------------------------- */
+
+/* The module answers the title bar's clicks, drags and exposures. It is what
+   turns a drawn bar into one that can actually be used. */
+extern const WmModule wm_frame_module;
+
+#endif /* GNUCHANWM_FRAME_H */

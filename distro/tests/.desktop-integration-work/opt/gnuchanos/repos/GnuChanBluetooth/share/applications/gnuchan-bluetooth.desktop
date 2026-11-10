@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GnuChanBluetooth
+Comment=Manage Bluetooth devices
+Exec=GnuChanBluetooth
+TryExec=GnuChanBluetooth
+Icon=bluetooth
+Terminal=false
+StartupNotify=true
+Categories=Settings;HardwareSettings;

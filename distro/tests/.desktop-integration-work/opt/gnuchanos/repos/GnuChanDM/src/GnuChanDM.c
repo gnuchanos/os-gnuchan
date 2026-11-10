@@ -1,0 +1,162 @@
+/*
+ * GnuChanDM.c — the entry point.
+ *
+ * This is the only file that decides which modules make up the greeter and what
+ * happens when the user asks for something. The core knows nothing about
+ * logging in; it runs a list of modules and hands them events. So the whole of
+ * "what a login screen does" is: two modules, and a loop that acts on what they
+ * asked for.
+ *
+ *     GnuChanDM            start the greeter
+ *     GnuChanDM --version  print the version and exit
+ *
+ * It has to be started as root: checking a password and becoming a user are
+ * root's work.
+ */
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "dm_core.h"
+#include "gnuchan_lang.h"
+
+#define GNUCHANDM_VERSION "0.1.0"
+
+static const char *LOG_PATH = "/tmp/gnuchandm.log";
+
+/* The stop request lives in the core, not in a local here, because it has to
+   be answered in two places that are not this function: the event loop below
+   and the wait for a running session in dm_session.c. A local flag was only
+   ever read at the top of the loop, so a SIGTERM that arrived while the
+   greeter was blocked — in XNextEvent, or waiting for a session — was set and
+   then never looked at again until the block happened to end on its own. That
+   is a greeter systemd has to SIGKILL at a reboot. */
+static void handle_signal(int signum) {
+    (void)signum;
+    dm_core_request_stop();
+}
+
+/* Login first: it lays the screen out, and the input module's hit-testing reads
+   the rectangles that layout put down. */
+static void register_modules(DmCore *core) {
+    dm_register(core, &dm_login_module);
+    dm_register(core, &dm_input_module);
+}
+
+static void open_log(void) {
+    int fd = open(LOG_PATH,
+                  O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
+                  0600);
+    if (fd < 0) return;
+    struct stat info;
+    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_uid != geteuid() || ftruncate(fd, 0) != 0) {
+        close(fd);
+        return;
+    }
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+}
+
+/* Check the password and open the session, then — only then — start it. */
+static void attempt_login(DmCore *core) {
+    /* dm_auth_check opens a PAM session as well as checking the password, so
+       pam_systemd runs and the user's runtime directory and session bus come
+       up before dm_session_start builds the environment from them. The handle
+       it leaves in core->pam is closed below, once the session has ended. */
+    if (dm_auth_check(core)) {
+        dm_form_clear_password(core);
+        if (dm_session_start(core, core->username) != 0) {
+            dm_form_set_message(core, gnuchan_lang_t("dm_cannot_start_session"), 1);
+        }
+        /* Reached when the session has ended — the user logged out. The login
+           is closed with it, so logind tears the runtime directory and the bus
+           down and a fresh login builds them again. */
+        dm_auth_end(core);
+        core->focus = DM_FOCUS_PASSWORD;
+        dm_form_set_message(core, NULL, 0);
+        dm_core_redraw(core);
+        return;
+    }
+
+    dm_form_clear_password(core);
+    dm_form_set_message(core, gnuchan_lang_t("dm_wrong_password"), 1);
+    core->focus = DM_FOCUS_PASSWORD;
+}
+
+/* Act on what the input module asked for, at the top of the loop — never inside
+   the event that set it. */
+static void act(DmCore *core) {
+    DmAction action = core->action;
+    core->action = DM_ACTION_NONE;
+
+    switch (action) {
+    case DM_ACTION_LOGIN:    attempt_login(core); break;
+    case DM_ACTION_REBOOT:   dm_power_reboot();   break;
+    case DM_ACTION_SHUTDOWN: dm_power_shutdown(); break;
+    case DM_ACTION_NONE:                          break;
+    }
+}
+
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("GnuChanDM %s\n", GNUCHANDM_VERSION);
+            return 0;
+        }
+        if (strcmp(argv[i], "--help") == 0) {
+            printf("usage: GnuChanDM [--version] [--help]\n"
+                   "\n"
+                   "Starts the GnuchanOS login screen. It must run as root.\n");
+            return 0;
+        }
+    }
+
+    gnuchan_lang_init();
+    open_log();
+    fprintf(stderr, "%s\n",
+            gnuchan_lang_t("dm_started"));
+
+    if (geteuid() != 0) {
+        fprintf(stderr, "%s\n", gnuchan_lang_t("dm_must_run_as_root"));
+        return 1;
+    }
+
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = handle_signal;
+    if (sigaction(SIGTERM, &action, NULL) != 0 ||
+        sigaction(SIGINT, &action, NULL) != 0) {
+        fprintf(stderr, "%s\n", gnuchan_lang_t("dm_cannot_install_signals"));
+        return 1;
+    }
+
+    DmCore core;
+    if (dm_core_init(&core) != 0) {
+        fprintf(stderr, "%s\n", gnuchan_lang_t("dm_no_display"));
+        dm_core_shutdown(&core);
+        return 1;
+    }
+
+    register_modules(&core);
+
+    if (dm_core_start(&core) != 0) {
+        dm_core_shutdown(&core);
+        return 1;
+    }
+
+    fprintf(stderr, "gnuchandm: ready\n");
+
+    while (core.running && !dm_core_stop_requested()) {
+        dm_core_step(&core);
+        if (core.action != DM_ACTION_NONE) act(&core);
+    }
+
+    dm_core_shutdown(&core);
+    return 0;
+}

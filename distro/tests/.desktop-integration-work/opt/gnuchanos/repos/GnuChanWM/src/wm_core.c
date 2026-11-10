@@ -1,0 +1,568 @@
+/*
+ * wm_core.c — the X connection, the atom table, and the event loop.
+ *
+ * This file does no window management of its own. It claims the display,
+ * resolves the atoms once, initialises every registered module, then reads
+ * events from the X server and hands each one to every module in turn.
+ * Everything a user would call "the window manager" lives in the modules.
+ *
+ * The loop is not a plain XNextEvent, because two things a desktop needs are
+ * not events: a clock has to move, and a settings file has to be noticed when
+ * it is saved. So the core waits on the X connection with a timeout — the
+ * shortest one any module asked for — and calls the modules' tick callbacks
+ * whenever it wakes, whether that was an event or the timeout. A session with
+ * no clock and no config still waits forever, which costs nothing.
+ */
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <X11/XKBlib.h>
+
+#include "wm_core.h"
+#include "wm_spawn.h"
+
+/* Point this session at ONE session bus, before anything is started.
+ *
+ * A session that begins without DBUS_SESSION_BUS_ADDRESS makes every program
+ * that needs the bus autolaunch a PRIVATE one with dbus-launch — and then two
+ * programs that must talk to each other do not, because they are on different
+ * buses. The screen saver is the case that matters here: it takes the
+ * org.freedesktop.ScreenSaver name on ITS bus, and a browser's Inhibit goes out
+ * on the browser's, so a film plays with the saver dropped over it while both
+ * programs think they did the right thing.
+ *
+ * systemd already runs the session's bus at $XDG_RUNTIME_DIR/bus. Pointing the
+ * environment at it, once, before any module starts a program, is what makes the
+ * whole session one session. An environment that already names a bus is left
+ * exactly as it is.
+ *
+ * The check is for a SOCKET and not for any file, because the path is a
+ * directory in some setups and a stale address would be worse than none: a
+ * program told to use a socket that is not there blocks instead of falling back
+ * to its own bus. */
+static void core_ensure_session_bus(void) {
+    if (getenv("DBUS_SESSION_BUS_ADDRESS") != NULL) {
+        return;
+    }
+
+    char path[512];
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (runtime != NULL && runtime[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/bus", runtime);
+    } else {
+        snprintf(path, sizeof(path), "/run/user/%u/bus", (unsigned)getuid());
+    }
+
+    struct stat info;
+    if (stat(path, &info) == 0 && S_ISSOCK(info.st_mode)) {
+        char address[600];
+        snprintf(address, sizeof(address), "unix:path=%s", path);
+        setenv("DBUS_SESSION_BUS_ADDRESS", address, 1);
+        fprintf(stderr, "gnuchanwm: session bus at %s\n", address);
+        return;
+    }
+
+    /* No systemd bus socket is present — which is what a session started by
+       the greeter, rather than by a login that would have made one, looks
+       like. Starting a bus here with dbus-launch, and adopting its address, is
+       what still gives the whole session ONE bus: the screen saver and the
+       browser are BOTH children of this process, so both get the address, and
+       the browser's Inhibit then reaches the saver.
+     *
+     * This is the fix for the fault the socket-only branch above let through.
+     * With no address in the environment the two ends went to different buses:
+     * the saver autolaunched a private one of its own (libdbus falls back to
+     * autolaunch), and the browser — Chromium, inside Qt WebEngine — opened
+     * none at all. The saver then held the ScreenSaver name on a bus nothing
+     * else was on, the browser's Inhibit went nowhere, and the saver dropped
+     * over a playing video while both programs believed they had done the
+     * right thing. */
+    FILE *launch = popen("dbus-launch --sh-syntax 2>/dev/null", "r");
+    if (launch == NULL) {
+        return;
+    }
+    char line[1024];
+    while (fgets(line, sizeof(line), launch) != NULL) {
+        const char *key = "DBUS_SESSION_BUS_ADDRESS=";
+        char *at = strstr(line, key);
+        if (at == NULL) {
+            continue;
+        }
+        char *value = at + strlen(key);
+        char *quote = strchr(value, '\'');
+        if (quote != NULL) {
+            value = quote + 1;
+            char *stop = strchr(value, '\'');
+            if (stop != NULL) {
+                *stop = '\0';
+            }
+        } else {
+            char *stop = value;
+            while (*stop != '\0' && *stop != '\n') {
+                stop++;
+            }
+            *stop = '\0';
+        }
+        if (value[0] != '\0') {
+            setenv("DBUS_SESSION_BUS_ADDRESS", value, 1);
+            fprintf(stderr, "gnuchanwm: session bus at %s\n", value);
+        }
+        break;
+    }
+    pclose(launch);
+}
+
+Atom wm_atom(WmCore *core, const char *name) {
+    return XInternAtom(core->display, name, False);
+}
+
+/* Set while the substructure is being claimed, and the answer found while it
+   was open.
+ *
+ * Xlib reports an X error asynchronously, from inside the request that caused
+ * it, and XSelectInput has no return value to test — so the only way to learn
+ * that another window manager already owns the display is to notice the error
+ * as it arrives. The window is the test: claim_open is raised for exactly the
+ * one request that can fail this way and lowered again before anything else
+ * runs, so a BadAccess seen inside it is that request's and nothing else's.
+ * Testing the request code instead would mean naming an X protocol constant
+ * that Xlib does not expose, and a key grab refused later in the session — a
+ * BadAccess of its own — must not be mistaken for this one. */
+static volatile sig_atomic_t claim_open = 0;
+static volatile sig_atomic_t claim_refused = 0;
+
+/* Xlib's default reaction to any X error — a BadWindow from a window destroyed
+   between two events, a BadAccess from a key another client already owns — is
+   to print one line and call exit(). A window manager meets those races
+   constantly, so it must not: the error is reported and the WM keeps running.
+   Without this, the first lost race kills the session.
+ *
+ * The one error that is not survivable is BadAccess on the substructure claim:
+ * it means a window manager is already running on this display, and two
+ * managers fight over every map, configure and unmap until neither works. It
+ * is recorded rather than acted on here, because a handler must not end the
+ * process; wm_core_init() reads the flag and stops. */
+static int core_x_error(Display *display, XErrorEvent *error) {
+    char text[256];
+    text[0] = '\0';
+    XGetErrorText(display, error->error_code, text, sizeof(text));
+    fprintf(stderr,
+            "gnuchanwm: X error: %s (request %d.%d, resource 0x%lx)\n",
+            text, error->request_code, error->minor_code,
+            (unsigned long)error->resourceid);
+    if (error->error_code == BadAccess && claim_open) {
+        claim_refused = 1;
+    }
+    return 0;
+}
+
+int wm_register(WmCore *core, const WmModule *module) {
+    if (core->modules.count >= WM_MAX_MODULES) {
+        fprintf(stderr, "gnuchanwm: too many modules (max %d)\n", WM_MAX_MODULES);
+        return -1;
+    }
+    if (!module || !module->name) {
+        return -1;
+    }
+    core->modules.items[core->modules.count++] = module;
+    return 0;
+}
+
+/* Rebuild _NET_CLIENT_LIST on the root.
+ *
+ * The list holds the clients, not the desktop's own frames, and once a client
+ * has been reparented it is no longer a child of the root — it lives inside a
+ * frame. A walk of the query tree would therefore find nothing, so the frame
+ * table is what is asked: it is the only thing that still knows which windows
+ * are clients. A task list or a pager is what reads this property, and an
+ * empty one is a task list that shows nothing. */
+static void core_publish_client_list(WmCore *core) {
+    Window clients[WM_MAX_FRAMES];
+    int client_count = 0;
+    for (int i = 0; i < core->frame_count && i < WM_MAX_FRAMES; i++) {
+        clients[client_count++] = core->frames[i].client;
+    }
+    XChangeProperty(core->display, core->root, core->net_client_list,
+                    XA_WINDOW, 32, PropModeReplace,
+                    (unsigned char *)clients, client_count);
+}
+
+/* Publish how many desktops there are and which one is current, on the root.
+   Both are read by a pager or a dock; the number is a plain cardinal and the
+   current one is an index into it. Called at start-up, on every switch, and
+   after every reload (the number can change when the script's layout widget
+   names a different range). */
+void core_publish_desktops(WmCore *core) {
+    long count = wm_workspace_count(core);
+    long current = core->current_workspace;
+    XChangeProperty(core->display, core->root, core->net_number_of_desktops,
+                    XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)&count, 1);
+    XChangeProperty(core->display, core->root, core->net_current_desktop,
+                    XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)&current, 1);
+}
+
+static void core_publish_supported(WmCore *core) {
+    Atom supported[] = {
+        core->net_supported,
+        core->net_supporting_wm_check,
+        core->net_wm_name,
+        core->net_active_window,
+        core->net_client_list,
+        core->net_wm_window_type,
+        core->net_frame_extents,
+        /* _NET_WM_STATE and its fullscreen member. Both are advertised, and
+           both are advertised TOGETHER: a client that reads _NET_SUPPORTED to
+           decide whether the manager can be asked for fullscreen looks for the
+           pair, and a manager that listed only the property would be asked and
+           would not answer. */
+        core->net_wm_state,
+        core->net_wm_state_fullscreen,
+        /* The desktop set, so a pager or dock knows the manager answers
+           _NET_CURRENT_DESKTOP and _NET_WM_DESKTOP. */
+        core->net_current_desktop,
+        core->net_number_of_desktops,
+        core->net_wm_desktop,
+    };
+    XChangeProperty(core->display, core->root, core->net_supported,
+                    XA_ATOM, 32, PropModeReplace,
+                    (unsigned char *)supported,
+                    (int)(sizeof(supported) / sizeof(supported[0])));
+}
+
+/* Advertise ourselves through _NET_SUPPORTING_WM_CHECK: a small window that
+   names us, with the same property on the root pointing at it. This is how a
+   desktop environment tells "a window manager is running" from "there is
+   none". */
+static Window core_create_check_window(WmCore *core) {
+    Window check = XCreateSimpleWindow(core->display, core->root,
+                                       0, 0, 1, 1, 0, 0, 0);
+    const char *name = "GnuChanWM";
+    XChangeProperty(core->display, check, core->net_supporting_wm_check,
+                    XA_WINDOW, 32, PropModeReplace,
+                    (unsigned char *)&check, 1);
+    XChangeProperty(core->display, check, core->net_wm_name,
+                    core->utf8_string, 8, PropModeReplace,
+                    (const unsigned char *)name, (int)strlen(name));
+    XChangeProperty(core->display, core->root, core->net_supporting_wm_check,
+                    XA_WINDOW, 32, PropModeReplace,
+                    (unsigned char *)&check, 1);
+    return check;
+}
+
+/* Keep the X connection out of every program this session starts.
+ *
+ * Xlib opens the server's socket without close-on-exec set, so a forked child
+ * inherits the descriptor and, once it has exec'd, holds the connection open
+ * for as long as it runs. That is not one leaked descriptor: the X server ties
+ * a client — and everything the client has claimed, the substructure redirect
+ * a window manager holds among it — to the connection, and the connection
+ * stays alive while any process has the descriptor. A window manager that
+ * exits while a program it started is still running therefore leaves the
+ * redirect claimed by a client that no longer exists, and the next session's
+ * window manager is refused with BadAccess and quits at once. From the user's
+ * side that is a session that starts, goes black and lands back on the login
+ * screen — once per attempt. Setting the flag once, here, is what makes the
+ * connection end when this process does. */
+static void core_close_display_on_exec(WmCore *core) {
+    int fd = ConnectionNumber(core->display);
+    int flags = fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return;
+    }
+    fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+int wm_core_init(WmCore *core) {
+    memset(core, 0, sizeof(*core));
+
+    /* Before anything this session will start: give it one bus to share. */
+    core_ensure_session_bus();
+
+    core->display = XOpenDisplay(NULL);
+    if (!core->display) {
+        fprintf(stderr, "gnuchanwm: cannot open the X display. Is DISPLAY set?\n");
+        return -1;
+    }
+
+    /* DETECTABLE AUTO-REPEAT, asked for once and for the whole session.
+     *
+     * By default the server reports a key that is held down as a stream of
+     * RELEASE and PRESS pairs — the release half is the repeat. Every handler
+     * that watches a key's release then has to guess which releases are real,
+     * and the switcher gets that guess wrong: it reads a repeat as the hand
+     * letting go and commits, so a key held for a moment opens and closes the
+     * switcher over and over.
+     *
+     * With this on, a held key reports ONLY presses and the release that
+     * arrives is the one the hand made. The guess disappears rather than being
+     * made more carefully, which is the whole point — and the arrow keys stop
+     * being reordered, because nothing is peeking at the queue to tell a repeat
+     * apart any more.
+     *
+     * A server without XKB answers no and leaves the old behaviour in place;
+     * the handlers keep their own fallback for that case. */
+    Bool detectable = False;
+    XkbSetDetectableAutoRepeat(core->display, True, &detectable);
+
+    core->screen = DefaultScreen(core->display);
+    core->root = RootWindow(core->display, core->screen);
+    core_close_display_on_exec(core);
+    core->running = 1;
+    core->width = DisplayWidth(core->display, core->screen);
+    core->height = DisplayHeight(core->display, core->screen);
+    core->desktop_width = core->width;
+    core->desktop_height = core->height;
+
+    /* The palette and the font are the desktop's whole appearance, and the
+       one graphics context is what every module draws with. They are made
+       here, once, before any module can ask for them. */
+    if (wm_style_load(&core->style, core->display, core->screen) != 0) {
+        fprintf(stderr, "gnuchanwm: cannot resolve the desktop style\n");
+        XCloseDisplay(core->display);
+        core->display = NULL;
+        return -1;
+    }
+    core->gc = XCreateGC(core->display, core->root, 0, NULL);
+    if (core->gc == NULL) {
+        fprintf(stderr, "gnuchanwm: cannot create a graphics context\n");
+        XCloseDisplay(core->display);
+        core->display = NULL;
+        return -1;
+    }
+
+    /* Installed before any request that can fail: from here on an X error is
+       a line in the log and nothing more. */
+    XSetErrorHandler(core_x_error);
+
+    core->net_supported = wm_atom(core, "_NET_SUPPORTED");
+    core->net_supporting_wm_check = wm_atom(core, "_NET_SUPPORTING_WM_CHECK");
+    core->net_wm_name = wm_atom(core, "_NET_WM_NAME");
+    core->net_active_window = wm_atom(core, "_NET_ACTIVE_WINDOW");
+    core->net_client_list = wm_atom(core, "_NET_CLIENT_LIST");
+    core->net_wm_window_type = wm_atom(core, "_NET_WM_WINDOW_TYPE");
+    core->net_wm_window_type_dock = wm_atom(core, "_NET_WM_WINDOW_TYPE_DOCK");
+    core->net_frame_extents = wm_atom(core, "_NET_FRAME_EXTENTS");
+    core->net_wm_state = wm_atom(core, "_NET_WM_STATE");
+    core->net_wm_state_fullscreen =
+        wm_atom(core, "_NET_WM_STATE_FULLSCREEN");
+    core->net_current_desktop = wm_atom(core, "_NET_CURRENT_DESKTOP");
+    core->net_number_of_desktops = wm_atom(core, "_NET_NUMBER_OF_DESKTOPS");
+    core->net_wm_desktop = wm_atom(core, "_NET_WM_DESKTOP");
+    core->wm_state = wm_atom(core, "WM_STATE");
+    core->wm_protocols = wm_atom(core, "WM_PROTOCOLS");
+    core->wm_delete_window = wm_atom(core, "WM_DELETE_WINDOW");
+    core->wm_take_focus = wm_atom(core, "WM_TAKE_FOCUS");  /* CRITICAL FOR WINE */
+    core->utf8_string = wm_atom(core, "UTF8_STRING");
+
+    /* Claim the substructure: from now on the X server routes every map,
+       configure and unmap of a top-level window through us.
+     *
+     * Selecting it is also how we tell that another WM is not already running.
+     * The server answers with BadAccess and redirects nothing, and because the
+     * reply is asynchronous there is no return value to test: the error
+     * handler above records it in claim_refused as it arrives, and XSync()
+     * is what forces that answer to have come back before the flag is read.
+     * Without this test a second WM would start, find no windows to manage,
+     * and fight the first one for every event — which is worse than not
+     * starting, because it looks like a working session that drops windows. */
+    claim_refused = 0;
+    claim_open = 1;
+    XSelectInput(core->display, core->root, WM_EVENT_MASK);
+    XSync(core->display, False);
+    claim_open = 0;
+
+    if (claim_refused) {
+        fprintf(stderr,
+                "gnuchanwm: another window manager already owns this display; "
+                "not starting a second one.\n");
+        XCloseDisplay(core->display);
+        core->display = NULL;
+        return -1;
+    }
+
+    core->check_window = core_create_check_window(core);
+    core_publish_supported(core);
+    core_publish_client_list(core);
+    /* How many desktops there are, and which is current, published before
+       anything can be placed on one. A dock reads these to decide which
+       workspace to show. */
+    core_publish_desktops(core);
+    XSync(core->display, False);
+
+    return 0;
+}
+
+/* Run every module's init, in the order they were registered. This is a step
+   of its own because the core has to exist before a module can be registered
+   on it, and a module's init needs the display that wm_core_init() opened —
+   so the two cannot be the same call. */
+int wm_core_start(WmCore *core) {
+    for (int i = 0; i < core->modules.count; i++) {
+        const WmModule *module = core->modules.items[i];
+        if (module->init && module->init(core) != 0) {
+            fprintf(stderr, "gnuchanwm: module '%s' failed to start\n", module->name);
+            return -1;
+        }
+    }
+    fprintf(stderr, "gnuchanwm: running with %d module(s)\n", core->modules.count);
+    return 0;
+}
+
+/* The shortest interval any module asked for, in milliseconds, or -1 when no
+   module wants time. The caller waits that long before giving up on the
+   display, which is what lets a clock move on an idle session. */
+static int core_tick_interval(WmCore *core) {
+    int shortest = -1;
+    for (int i = 0; i < core->modules.count; i++) {
+        const WmModule *module = core->modules.items[i];
+        if (!module->tick || module->interval_ms <= 0) {
+            continue;
+        }
+        int interval = module->interval_ms;
+        if (interval > WM_MAX_TICK_MS) {
+            interval = WM_MAX_TICK_MS;
+        }
+        if (shortest < 0 || interval < shortest) {
+            shortest = interval;
+        }
+    }
+    return shortest;
+}
+
+static void core_call_ticks(WmCore *core) {
+    for (int i = 0; i < core->modules.count; i++) {
+        const WmModule *module = core->modules.items[i];
+        if (module->tick) {
+            module->tick(core);
+        }
+    }
+}
+
+static void core_dispatch(WmCore *core, XEvent *event) {
+    /* A window that was just mapped, unmapped or destroyed changes the client
+       list, so it is republished before the modules see it. */
+    if (event->type == MapNotify || event->type == UnmapNotify ||
+        event->type == DestroyNotify) {
+        core_publish_client_list(core);
+    }
+
+    for (int i = 0; i < core->modules.count; i++) {
+        const WmModule *module = core->modules.items[i];
+        if (module->event) {
+            module->event(core, event);
+        }
+    }
+}
+
+/* Read and dispatch exactly one event, after waiting for the modules that
+   asked for time.
+ *
+ * The wait is a select() on the X connection rather than a blocking
+ * XNextEvent, and the difference is the whole reason this is not one line: a
+ * clock that only moved when a window was clicked would not be a clock. The
+ * callbacks run after the wait, not before, so an event that arrives while
+ * the display is quiet is dispatched as soon as it does rather than after the
+ * next tick.
+ *
+ * A signal interrupts the wait — that is how the loop is asked to stop — and
+ * the interrupted wait ends the step: the flag the handler set is read by the
+ * caller, which is what lets the session close its display cleanly rather than
+ * mid-tick. Every other failure of the wait ends it too, for the same reason a
+ * failure is not a reason to ask again: a loop that retried would be a loop
+ * that spins. */
+void wm_core_step(WmCore *core) {
+    int interval = core_tick_interval(core);
+
+    /* Collect any program this session started that has since finished, so it
+       does not sit in the process table as a zombie. Cheap when nothing has
+       exited, and the loop runs often, so a child is collected within a step
+       or two of ending. */
+    wm_spawn_reap();
+
+    int fd = ConnectionNumber(core->display);
+
+    while (XPending(core->display) == 0) {
+        /* The set and the timeout are built again on every pass, because
+           select() writes to both of them: it clears the bit of every
+           descriptor that was not ready and leaves whatever time it did not
+           use in the timeout. Waiting again with what it left behind would ask
+           about no descriptor at all, so the wait would return at once — and
+           every later pass would be a pass of a loop that never blocks. An
+           idle session would then spin one core of the machine for as long as
+           nothing happened, which is what made a still desktop crawl. */
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(fd, &readable);
+
+        struct timeval timeout;
+        struct timeval *wait = NULL;
+        if (interval >= 0) {
+            timeout.tv_sec = interval / 1000;
+            timeout.tv_usec = (interval % 1000) * 1000;
+            wait = &timeout;
+        }
+
+        int ready = select(fd + 1, &readable, NULL, NULL, wait);
+        if (ready > 0) {
+            break;
+        }
+        if (ready < 0) {
+            /* A signal interrupting the wait is how the loop is asked to
+               stop, and any other failure is not something to wait on again:
+               either way the wait ends and the loop goes back to reading the
+               display instead of asking about it in a spin. */
+            break;
+        }
+        /* The display was quiet for as long as the shortest interval allowed:
+           this is the tick. */
+        core_call_ticks(core);
+        if (!core->running) {
+            return;
+        }
+    }
+
+    if (XPending(core->display) == 0) {
+        return;
+    }
+
+    XEvent event;
+    XNextEvent(core->display, &event);
+    core_dispatch(core, &event);
+}
+
+void wm_core_run(WmCore *core) {
+    while (core->running) {
+        wm_core_step(core);
+    }
+}
+
+void wm_core_shutdown(WmCore *core) {
+    for (int i = core->modules.count - 1; i >= 0; i--) {
+        const WmModule *module = core->modules.items[i];
+        if (module->cleanup) {
+            module->cleanup(core);
+        }
+    }
+    if (core->display) {
+        if (core->gc != NULL) {
+            XFreeGC(core->display, core->gc);
+            core->gc = NULL;
+        }
+        if (core->check_window != None) {
+            XDestroyWindow(core->display, core->check_window);
+            core->check_window = None;
+        }
+        wm_style_free(&core->style, core->display);
+        XCloseDisplay(core->display);
+        core->display = NULL;
+    }
+}

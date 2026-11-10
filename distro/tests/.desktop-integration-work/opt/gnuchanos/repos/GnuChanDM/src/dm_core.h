@@ -1,0 +1,301 @@
+/*
+ * dm_core.h — the X connection, the window, and the shared state modules are
+ * given.
+ *
+ * The core owns the display, the one window the greeter draws in, the graphics
+ * context, the palette, and the login form's state. Modules never open their
+ * own display and never draw to their own window.
+ *
+ * The form state is here rather than in the input module because three modules
+ * read it: input fills it, the drawing reads it, and the session module reads
+ * the finished user name after a successful login.
+ */
+#ifndef GNUCHANDM_CORE_H
+#define GNUCHANDM_CORE_H
+
+#include <X11/Xlib.h>
+#include <security/pam_appl.h>
+
+#include "dm_module.h"
+#include "dm_sessions.h"
+#include "dm_style.h"
+
+/* The longest user name and password accepted. The password is a fixed buffer
+   so it can be wiped without the allocator keeping a copy of it. */
+#define DM_MAX_USERNAME 256
+#define DM_MAX_PASSWORD 256
+
+/* The form's two text fields. The values are also the indices into field_box,
+   so the layout and the input module agree on them without a table. */
+typedef enum DmField {
+    DM_FIELD_USERNAME = 0,
+    DM_FIELD_PASSWORD,
+    DM_FIELD_COUNT,
+} DmField;
+
+/* Every control the keyboard can be on: the two fields first, then the
+   buttons. Tab walks this list, so on a machine with no pointer the sign-in
+   and the power buttons are still reachable. The two field values are
+   deliberately equal to DM_FIELD_USERNAME/DM_FIELD_PASSWORD, so a focus
+   value 0 or 1 can index field_box directly. */
+typedef enum DmFocus {
+    DM_FOCUS_USERNAME = 0,
+    DM_FOCUS_PASSWORD,
+    DM_FOCUS_SIGNIN,
+    DM_FOCUS_SESSION,
+    DM_FOCUS_REBOOT,
+    DM_FOCUS_SHUTDOWN,
+    DM_FOCUS_COUNT,
+} DmFocus;
+
+/* Every clickable thing on the screen, for hit-testing a click. */
+typedef enum DmButton {
+    DM_BUTTON_NONE = -1,
+    DM_BUTTON_SIGNIN = 0,
+    DM_BUTTON_SESSION,
+    DM_BUTTON_REBOOT,
+    DM_BUTTON_SHUTDOWN,
+} DmButton;
+
+/* What the user asked for, set by the input module and acted on by the entry
+   point after the event that set it has been handled. It is an action and not
+   a call because a module must not start a session from inside an event —
+   the event loop has to finish first. */
+typedef enum DmAction {
+    DM_ACTION_NONE = 0,
+    DM_ACTION_LOGIN,
+    DM_ACTION_REBOOT,
+    DM_ACTION_SHUTDOWN,
+} DmAction;
+
+typedef struct DmModuleList {
+    const DmModule *items[DM_MAX_MODULES];
+    int count;
+} DmModuleList;
+
+struct DmCore {
+    Display *display;
+    int screen;
+    Window root;
+    Window window;
+    GC gc;
+
+    /* Everything is drawn into this off-screen copy and then put on the
+       window in one operation. Drawing straight to the window clears it and
+       redraws it, which is what makes it flicker while a key is held and
+       repeating. */
+    Pixmap buffer;
+
+    /* The pointer shown over the login screen. */
+    Cursor cursor;
+
+    int width;                /* the window's width and height; the greeter  */
+    int height;               /* redraws from these, so a resize just works */
+
+    /* The settings script read into plain data — see dm_config.h — and the
+       style it produced. The config is kept as well as the style because it is
+       what a person actually wrote, and a message about it ("Accent is not a
+       colour") has to name the setting rather than the pixel it became. */
+    DmConfig config;
+    DmStyle style;
+    int running;
+
+    /* The PAM handle for the login in progress, or NULL when nobody is logged
+       in. It is held for the WHOLE session and deliberately not closed when
+       the password checks out: pam_end is what makes pam_systemd tear down
+       /run/user/$UID and the session bus, so closing it at login would take
+       the desktop's own bus away the moment it was needed. It is released by
+       dm_auth_end() once the session has ended. See dm_auth.c. */
+    pam_handle_t *pam;
+    int pam_session_open;
+    int pam_status;
+
+    /* --- the login form --------------------------------------------------- */
+
+    char username[DM_MAX_USERNAME];
+    char password[DM_MAX_PASSWORD];
+    int  username_length;
+    int  password_length;
+    int  field_cursor[DM_FIELD_COUNT];
+    int  field_selection_anchor[DM_FIELD_COUNT];
+    DmFocus focus;
+
+    /* A message under the fields: an error after a failed login, or the host
+       name when there is nothing to report. Empty means show nothing. */
+    char message[256];
+    int  message_is_error;
+
+    /* Set by the input module, read and cleared by the entry point. */
+    DmAction action;
+
+    /* Set by the session module while a session is being started, so the
+       greeter can stop drawing and stop reading the keyboard. */
+    int starting_session;
+
+    /* --- the sessions this machine offers ---------------------------------
+       Read once at start from /usr/share/xsessions, which is where every
+       desktop on Debian writes one. The user picks one with the box under the
+       sign-in button and that is the command the session module runs. */
+    DmSession sessions[DM_MAX_SESSIONS];
+    int session_count;
+    int session_selected;
+    int session_open;      /* 1 while the list is dropped down */
+    int session_hover;     /* the row the pointer is over, -1 for none */
+
+    /* Where the layout put each control, so the input module can hit-test
+       against the same rectangles the drawing used. Filled by the login
+       module during its layout pass and read back by everything else. */
+    struct DmRect {
+        int x, y, width, height;
+    } field_box[DM_FIELD_COUNT];
+    struct DmRect button_box;
+    struct DmRect panel_box;
+    struct DmRect session_box;    /* the closed session selector          */
+    struct DmRect power_box[2];   /* power_box[0] reboot, power_box[1] poweroff */
+
+    /* Where a dropped-down session list's rows land. Only meaningful while
+       session_open is set; the input module tests a click against these, and
+       the login module draws them, from the same numbers. */
+    struct DmRect session_row[DM_MAX_SESSIONS];
+    struct DmRect session_list_box;
+};
+
+int  dm_core_init(DmCore *core);
+int  dm_core_start(DmCore *core);
+
+/* Read and dispatch exactly one event. */
+void dm_core_step(DmCore *core);
+
+/* Redraw the whole window: every module's draw, then the result on screen.
+   Called once at start, and by a module that has changed what is shown. */
+void dm_core_redraw(DmCore *core);
+
+void dm_core_shutdown(DmCore *core);
+
+/* Ask the greeter to stop, and ask whether it has been asked.
+ *
+ * A stop is asked for from a signal handler — SIGTERM from systemd at a
+ * logout, a reboot or a shutdown, or SIGINT from a terminal — and it has to be
+ * answered everywhere the greeter waits, not only at the top of its loop. The
+ * wait for a running session and the event loop both block on something that
+ * returns early on a signal and is then retried, which is what used to swallow
+ * the request, so the request is one flag here that both of them read rather
+ * than a local the entry point owns alone. */
+void dm_core_request_stop(void);
+int  dm_core_stop_requested(void);
+
+/* Put the screen back the way a login screen needs it.
+ *
+ * The screensaver's timer and the monitor's power saving belong to the X
+ * server, not to a session: a session that turned them on leaves them on. This
+ * turns both off and wakes the monitor, so the login screen that comes back
+ * after a logout is one the user can actually see — without it the greeter
+ * draws itself onto a dark monitor and the user waits for something to happen. */
+void dm_core_wake_screen(DmCore *core);
+
+/* Register a module. Call between dm_core_init() and dm_core_start(). */
+int  dm_register(DmCore *core, const DmModule *module);
+
+/* --- the state every module reads and writes ------------------------------ */
+
+/* Insert printable ASCII into the focused field, replacing any selection. */
+void dm_form_type(DmCore *core, char character);
+
+/* Delete backwards or forwards in the focused field. */
+void dm_form_backspace(DmCore *core);
+void dm_form_delete(DmCore *core);
+void dm_form_cursor_left(DmCore *core, int by_word);
+void dm_form_cursor_right(DmCore *core, int by_word);
+void dm_form_cursor_home(DmCore *core);
+void dm_form_cursor_end(DmCore *core);
+void dm_form_select_all(DmCore *core);
+void dm_form_clear_username(DmCore *core);
+
+/* Copy the text safe to draw: the password is returned as asterisks. */
+int dm_form_copy_display_text(const DmCore *core, DmField field,
+                              char *out, size_t capacity);
+
+/* Move the keyboard to the next control, wrapping around. The controls are
+   the two fields and then the buttons, so tab reaches the sign-in and power
+   buttons — which, on a machine with no pointer, is the only way to reach
+   them. Both return the control that now has focus. */
+DmFocus dm_form_focus_next(DmCore *core);
+DmFocus dm_form_focus_prev(DmCore *core);
+
+/* Whether a focus target is one of the text fields rather than a button. */
+int dm_focus_is_field(DmFocus focus);
+
+/* Put a message under the fields and redraw. An empty message clears it. */
+void dm_form_set_message(DmCore *core, const char *message, int is_error);
+
+/* Wipe the password and its editing state when a login fails or finishes. */
+void dm_form_clear_password(DmCore *core);
+
+/* --- the module entry points, one per file -------------------------------- */
+
+extern const DmModule dm_login_module;    /* dm_login.c   */
+extern const DmModule dm_input_module;    /* dm_input.c   */
+
+/* Which button a point is inside, or DM_BUTTON_NONE. The login module owns
+   the layout, so it is the only thing that can answer this — and answering it
+   from the same rectangles it drew means a click always lands on what the
+   user saw. DM_FIELD_COUNT is also tested: it returns the field that was hit,
+   or DM_BUTTON_NONE, through the out parameter. */
+DmButton dm_login_button_at(DmCore *core, int x, int y);
+int      dm_login_field_at(DmCore *core, int x, int y);
+
+/* Which dropped-down session row a point is on, or -1 when the list is closed
+   or the point is not on a row. */
+int      dm_login_session_row_at(DmCore *core, int x, int y);
+
+/* Put the session rows where the selector's list will be drawn. The login
+   module calls this from its layout, so the rows a click is tested against are
+   the rows that were drawn. */
+void     dm_login_layout_sessions(DmCore *core);
+
+/* dm_draw.c — the three primitives every drawing module uses. */
+void dm_draw_clear(DmCore *core, unsigned long colour);
+void dm_draw_box(DmCore *core, int x, int y, int width, int height,
+                 unsigned long fill, unsigned long edge, int edge_width);
+void dm_draw_text(DmCore *core, int x, int y, const char *text,
+                  XFontStruct *font, unsigned long colour);
+int  dm_draw_text_width(XFontStruct *font, const char *text, int length);
+
+/* dm_auth.c — authenticate a user and OPEN the PAM session.
+
+   Returns 1 when the password is right and the session opened, 0 otherwise.
+
+   The session is opened here (pam_open_session) and not only the password
+   checked. pam_systemd runs on exactly that call, and it is what registers the
+   login with systemd-logind — which in turn creates /run/user/$UID and starts
+   the user's D-Bus. Checking the password alone leaves the session without a
+   bus, so the notification server and every background daemon that wants one
+   has nowhere to hold a name.
+
+   Uses the user name and password already in core. On success the handle is
+   kept in core->pam and must be released with dm_auth_end() once the session
+   has ended. */
+int dm_auth_check(DmCore *core);
+
+/* Close the session dm_auth_check opened and release its handle, so logind is
+   told the login is over. Safe to call when there is no handle. */
+void dm_auth_end(DmCore *core);
+
+/* dm_sessions.c — read the sessions installed on this machine. */
+int dm_sessions_scan(DmSession *out, int max);
+int dm_sessions_find(const DmSession *sessions, int count, const char *name);
+
+/* dm_session.c — start the session the user chose, as the given user, and wait
+   for it. The greeter stays alive as the parent so that when the session ends
+   the login screen comes back: the greeter only truly exits when it is asked
+   to. Returns 0 when the session ended and -1 when it could not be started. */
+int dm_session_start(DmCore *core, const char *username);
+
+/* The session the user has chosen, or NULL when the machine has none. */
+const DmSession *dm_session_selected(const DmCore *core);
+
+/* dm_power.c — ask the system to reboot or to power off. Never returns. */
+void dm_power_reboot(void);
+void dm_power_shutdown(void);
+
+#endif /* GNUCHANDM_CORE_H */

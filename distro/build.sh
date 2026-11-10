@@ -54,14 +54,16 @@ die() { printf '  ! %s\n' "$1" >&2; exit 1; }
 # --- early validation ---------------------------------------------------------
 
 has_staged_sibling_checkout() {
-    case "$1" in
-        GnuChanSound|GnuChanDesktop|GnuChanFileManager|GnuChanWelcome)
-            [ -d "$OS_ROOT/../$1" ]
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    checkout="$1"
+    [ "$checkout" != GCL ] || checkout=gcl
+    checkout="$OS_ROOT/../$checkout"
+    [ -f "$checkout/src/makefile.py" ] ||
+        [ -f "$checkout/makefile.py" ] ||
+        [ -f "$checkout/install.sh" ] ||
+        [ -f "$checkout/scripts/install.sh" ] ||
+        [ -f "$checkout/setup.py" ] ||
+        [ -f "$checkout/Makefile" ] ||
+        [ -f "$checkout/CMakeLists.txt" ]
 }
 
 # Check program repositories before starting the long build
@@ -72,18 +74,24 @@ validate_program_repos() {
     
     # Programs list from GnuChanPrograms.sh
     PROGRAMS_LIST="
+    GnuChanGUI
     GnuChanTerm
     GnuChanFetch
     GnuChanRunner
     GnuChanWifi
     GnuChanNetworkManager
+    GnuChanBluetooth
     GnuChanDock
     GnuChanBrowser
     GnuChanSS
     GnuChanLockScreen
     GnuChanNotification
+    GnuChanScreenShoot
+    GnuChanSoftwareCenter
+    GnuChanImageViewer
     GnuChanWelcome
     GnuChanSound
+    GnuChanSoundRecord
     GnuChanDesktop
     GnuChanFileManager
     GnuChanTop

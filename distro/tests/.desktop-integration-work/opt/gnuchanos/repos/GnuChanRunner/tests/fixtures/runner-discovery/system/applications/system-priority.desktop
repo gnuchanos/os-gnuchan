@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=User Priority App
+Exec=system-priority-command

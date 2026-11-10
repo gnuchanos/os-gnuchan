@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gnuchan-bluetooth"
+version = "0.1.0"
+description = "A safe desktop Bluetooth manager for BlueZ"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "GnuChanOS" }]
+dependencies = []
+
+[project.scripts]
+GnuChanBluetooth = "gnuchan_bluetooth.cli:main"
+
+[tool.setuptools]
+packages = ["gnuchan_bluetooth"]

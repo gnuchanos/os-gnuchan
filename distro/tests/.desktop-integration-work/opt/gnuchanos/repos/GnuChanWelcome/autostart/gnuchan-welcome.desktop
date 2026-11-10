@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GnuChan first-login welcome
+Comment=Show the GnuChan welcome guide once
+Exec=gnuchan-welcome --first-run
+Icon=help-about
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

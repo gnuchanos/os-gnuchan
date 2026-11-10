@@ -5,18 +5,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DISTRO=$(CDPATH= cd -- "$HERE/.." && pwd)
 OS_ROOT=$(CDPATH= cd -- "$DISTRO/.." && pwd)
 CHECKOUT="$OS_ROOT/../GnuChanDesktop"
-WORK="$HERE/.desktop-integration-work"
-
-if [ -e "$WORK" ]; then
-    printf 'test work path already exists; refusing to overwrite: %s\n' "$WORK" >&2
-    exit 1
-fi
 if [ ! -d "$CHECKOUT" ]; then
     printf 'GnuChanDesktop sibling checkout not found: %s\n' "$CHECKOUT" >&2
     exit 1
 fi
 
-mkdir -p "$WORK"
+WORK=$(mktemp -d "$HERE/.desktop-integration-work.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
 STAGE="$WORK/opt/gnuchanos"
@@ -32,12 +26,10 @@ sh "$DISTRO/stage-program-checkouts.sh" "$OS_ROOT" "$STAGE/repos"
     DESTDIR="$DESTDIR" sh ./install.sh
 )
 
-LAUNCHER="$DESTDIR/usr/local/bin/gnuchan-desktop-panel"
-LEGACY_COMMAND="$DESTDIR/usr/local/bin/GnuChanDesktop"
+LAUNCHER="$DESTDIR/usr/local/bin/GnuChanDesktop"
 DESKTOP_ENTRY="$DESTDIR/usr/share/applications/gnuchan-desktop-panel.desktop"
 [ -x "$LAUNCHER" ]
-[ -x "$LEGACY_COMMAND" ]
-[ "$(readlink "$LEGACY_COMMAND")" = "gnuchan-desktop-panel" ]
+[ ! -e "$DESTDIR/usr/local/bin/gnuchan-desktop-panel" ]
 [ -f "$DESKTOP_ENTRY" ]
 grep -Fxq 'Type=Application' "$DESKTOP_ENTRY"
 grep -Fxq 'Name=GnuChan Desktop' "$DESKTOP_ENTRY"
@@ -46,7 +38,6 @@ grep -Fxq 'TryExec=/usr/local/bin/GnuChanDesktop' "$DESKTOP_ENTRY"
 grep -Fxq 'Categories=Settings;DesktopSettings;' "$DESKTOP_ENTRY"
 grep -Fxq 'Terminal=false' "$DESKTOP_ENTRY"
 
-PATH="$DESTDIR/usr/local/bin:$PATH" gnuchan-desktop-panel --version
 PATH="$DESTDIR/usr/local/bin:$PATH" GnuChanDesktop --version
 grep -Fq 'python3-tk' "$DISTRO/config/package-lists/GnuchanOS.list.chroot"
 grep -Fq 'feh' "$DISTRO/config/package-lists/GnuchanOS.list.chroot"

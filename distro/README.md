@@ -46,11 +46,12 @@ the source tree.
     the image is built by cloning them and running each one's own `makefile.py`,
     or its repository install script where it has no Python makefile. That
     script holds the one list of what the programs are and the order they
-    install in, including GnuChanWelcome, GnuChanSound, GnuChanDesktop and
-    GnuChanFileManager. Local checkouts under `distro/repos/` and the Sound,
-    Desktop, FileManager and Welcome sibling projects are staged before any
-    network fetch, including when a Windows-mounted source tree is relocated
-    to Linux for the ISO build. The
+    install in, including GnuChanGUI, GnuChanBluetooth, GnuChanImageViewer and
+    GnuChanSoundRecord. Local buildable checkouts under `distro/repos/` and
+    sibling project directories are staged before any network fetch, including
+    when a Windows-mounted source tree is relocated to Linux for the ISO build.
+    GnuChanGUI is installed as a Python toolkit dependency; it has no standalone
+    launcher. The
     distro build is strict: a program that cannot be fetched or built fails the
     image build instead of shipping a desktop with missing components. Set
     `GNUCHAN_PROGRAMS_STRICT=0` only when deliberately building an incomplete
@@ -76,6 +77,10 @@ the source tree.
     `gnuchanos` / `gnuchanos` (see the liveuser hook). The greeter and the lock
     screen both authenticate through PAM, so `/etc/pam.d/gnuchandm` and
     `/etc/pam.d/gnuchansl` are written by the session hook.
+
+  * **Middle-button scrolling** — XLibre's libinput driver is configured so
+    pressing and moving a physical mouse's middle button scrolls by default.
+    Touchpads keep their existing two-finger scrolling behavior.
 
   * **Laptop lid** — systemd-logind ignores physical lid events, so closing or
     opening the lid does not trigger suspend or hibernate. GnuChanWM does not
@@ -173,10 +178,12 @@ used for the ISO in preference to the remote DM repository. An explicit
 checkout at `distro/repos/GnuChanDM` takes precedence over the sibling
 checkout. This lets local display-manager fixes be tested in a WSL ISO before
 they are published.
-The Sound, Desktop and FileManager sibling checkouts use the same staging
-helper. Run `sh tests/test-desktop-integration.sh` from this directory to
-exercise the Desktop checkout staging, installation, and menu launcher without
-building the full ISO.
+All buildable sibling checkouts use the same staging helper. Run
+`sh tests/test-program-coverage.sh` to verify every requested project is in the
+canonical program list, fail-early checks, and staging list. Run
+`sh tests/test-desktop-integration.sh` from this directory to exercise the
+Desktop checkout staging, installation, and menu launcher without building the
+full ISO.
 
 ### Building an image without a token
 

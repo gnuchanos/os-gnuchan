@@ -1,0 +1,120 @@
+/*
+ * wm_config_parser.h — declarations for the structured settings parser.
+ *
+ * The .conf format is a sequence of Key = value entries. Structured values
+ * may contain lists and calls so bars and key bindings remain data:
+ *
+ *     default_terminal = "xterm"
+ *     gcl_BAR.call(Position="top", Size=24)
+ *
+ * This is not a Python interpreter. It reads configuration data and produces
+ * a list of assignments and structured calls for the config module to walk.
+ *
+ * The parser is deliberately separate from the module that gives the
+ * statements meaning. Reading the file and understanding it are two
+ * different jobs, and only the second one knows what gcl_BAR is.
+ */
+#ifndef GNUCHANWM_CONFIG_PARSER_H
+#define GNUCHANWM_CONFIG_PARSER_H
+
+#include "wm_config.h"
+
+/* The most arguments one call may pass, and the most statements one file may
+   contain. Both are far above what a desktop script needs, and both exist so
+   that a malformed file cannot make the parser allocate without end. */
+#define WM_CONFIG_MAX_ARGS              32
+#define WM_CONFIG_PARSER_MAX_STATEMENTS 512
+
+typedef enum WmValueKind {
+    WM_VALUE_STRING,   /* "xterm"                                         */
+    WM_VALUE_NUMBER,   /* 24                                              */
+    WM_VALUE_BOOL,     /* True, False                                     */
+    WM_VALUE_NAME,     /* default_terminal - a name, resolved by the user */
+    WM_VALUE_LIST,     /* [super_key1, "return"]                          */
+    WM_VALUE_CALL,
+} WmValueKind;
+
+typedef struct WmStatement WmStatement;
+typedef struct WmValue {
+    WmValueKind kind;
+    char text[WM_CONFIG_TEXT_LENGTH];
+    int number;
+    /* The same number kept whole. A float — a compositor effect's opacity=0.5
+       — is read by the tokeniser as one token, but `number` truncates at the
+       dot, so anything that wants the fraction reads it here. */
+    double real;
+    int boolean;
+
+    /* WM_VALUE_LIST owns its items; wm_config_statements_free() releases
+       them, recursively, because a list may hold lists of its own. */
+    struct WmValue *items;
+    int item_count;
+    WmStatement *call;
+} WmValue;
+
+/* One named argument of a call. A positional argument has an empty name,
+   which is how the walker can tell "the first thing passed" from "the thing
+   called Position". */
+typedef struct WmArgument {
+    char name[WM_CONFIG_TEXT_LENGTH];
+    WmValue value;
+} WmArgument;
+
+typedef enum WmStatementKind {
+    WM_STMT_ASSIGN,   /* name = value                   */
+    WM_STMT_CALL,     /* object.method(name=value, ...) */
+} WmStatementKind;
+
+struct WmStatement {
+    WmStatementKind kind;
+
+    /* The whole name on the left: the variable for an assignment, and the
+       qualified object.method for a call. It is left as written - the parser
+       has no table of objects, so deciding that "gcl_BAR.call" is the bar is
+       the config module's job, not this one's. */
+    char target[WM_CONFIG_TEXT_LENGTH];
+
+    WmValue value;                        /* WM_STMT_ASSIGN */
+    WmArgument args[WM_CONFIG_MAX_ARGS];  /* WM_STMT_CALL   */
+    int arg_count;
+};
+
+/* Parse the script at path. On success *out points at a newly allocated list
+   of *out_count statements, which the caller frees with
+   wm_config_statements_free(). Returns 0 on success, -1 when the file cannot
+   be read or contains a statement this grammar does not accept. */
+int wm_config_parse_file(const char *path, WmStatement **out, int *out_count);
+
+/* The same, over text already in memory. */
+int wm_config_parse_text(const char *text, WmStatement **out, int *out_count);
+
+void wm_config_statements_free(WmStatement *statements, int count);
+
+/* The argument called name, or NULL when the call did not pass it. */
+const WmValue *wm_config_argument(const WmStatement *statement,
+                                  const char *name);
+
+/* A value as text: a string is itself, a number is written out, a name is the
+   name, and anything else leaves out empty. */
+void wm_config_value_text(const WmValue *value, char *out, unsigned int size);
+
+/* A value as a number or a flag, with the answer to use when the value is
+   missing or is not of that kind. */
+int wm_config_value_number(const WmValue *value, int fallback);
+int wm_config_value_bool(const WmValue *value, int fallback);
+
+/* A value as a real, so a script's own float — a compositor effect's
+   opacity=0.5 — is read as the fraction it is rather than truncated to 0. The
+   fallback is the answer when the value is missing or is not a number at
+   all. */
+double wm_config_value_real(const WmValue *value, double fallback);
+
+/* The message for the first statement the last read refused, or an empty
+   string when that read parsed. Reading the file and understanding it are two
+   jobs, and this is how a caller that only learns "the file did not parse"
+   says why: the message names the statement that could not be read, which is
+   what a person is shown when the settings script is saved with a mistake in
+   it. Only the first error is kept — the rest are consequences of it. */
+const char *wm_config_last_error(void);
+
+#endif /* GNUCHANWM_CONFIG_PARSER_H */

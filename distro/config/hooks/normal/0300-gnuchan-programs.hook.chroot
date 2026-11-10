@@ -76,8 +76,8 @@ if match is None:
     raise SystemExit(f"error: no gcl_autostart.all list in {path}")
 
 body = match.group(2)
-entry = '"gnuchan-welcome --first-run"'
-if not re.search(r'(?m)^[ \t]*"gnuchan-welcome --first-run"\s*,?[ \t]*(?:#.*)?$', body):
+entry = '"GnuChanWelcome --first-run"'
+if not re.search(r'(?m)^[ \t]*"GnuChanWelcome --first-run"\s*,?[ \t]*(?:#.*)?$', body):
     body += f"    {entry},\n"
     text = text[:match.start(2)] + body + text[match.end(2):]
     path.write_text(text, encoding="utf-8")

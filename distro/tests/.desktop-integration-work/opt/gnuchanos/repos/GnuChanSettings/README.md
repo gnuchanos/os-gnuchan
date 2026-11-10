@@ -1,0 +1,115 @@
+# GnuChanSettings
+
+GnuChanSettings is the control panel: one window from which the machine's
+settings are read and changed. It is written in C against Xlib, Xft and freetype
+for the window and the text, with Xrender for compositing. It is Debian-only, on
+purpose.
+
+## Building
+
+    git clone <repository-url> GnuChanSettings
+    cd GnuChanSettings/src
+    python3 makefile.py
+
+The makefile installs the build dependencies with apt-get, compiles the sources,
+and re-runs itself through sudo to write into `/usr/local/bin`. The binary goes
+to `/usr/local/bin/GnuChanSettings`; a desktop entry is written to
+`/usr/share/applications/gnuchansettings.desktop`.
+The install also provides a low-battery monitor and a privileged helper used
+by the System category. In a GnuChanWM session the monitor starts automatically
+and sends alerts through the session notification service.
+
+The System category configures the low-battery alert threshold (10% by default),
+TLP CPU profiles, a battery charge cap in Battery protection mode, the lid
+sleep action (suspend or hibernate), and English/Turkish locale preferences.
+The System / theme colour preset applies a coordinated palette to the Settings
+panel and the color settings managed for GnuChan applications. Presets include
+Purple (the existing default), Black, White, Gray, Blue, Green, Orange, Yellow,
+Red and Pink. Selecting a different preset and saving writes the choice to
+`~/.config/GnuChanSettings/system.conf` and updates relevant color values in
+each application's existing config format; semantic status colors such as
+danger, connected and warning indicators are retained.
+Battery charge thresholds are applied only on hardware supported by TLP.
+System changes requiring root use pkexec. Lid and locale changes take effect
+after the next login or reboot; TLP changes are applied when saved. Language
+choices configure system and per-user locales; applications without translated
+message catalogs continue to display their existing strings.
+
+The System page also lists connected USB devices and any storage volumes found
+by the kernel. Right-click a volume to mount or unmount it through `udisksctl`,
+or to disable/enable a USB device's runtime autosuspend by setting its sysfs
+`power/control` value to `on` or `auto`. The latter asks for administrator
+authorization through pkexec; devices or kernels without a writable power
+control report an error. Use Refresh after connecting or removing a device.
+Mount access is subject to the system's udisks/polkit policy.
+
+The GnuChanDM, GnuChanDock, GnuChanFetch, GnuChanSL,
+GnuChanNotification and GnuChanSS categories use `Key = value` `.conf` files,
+the same plain format as `system.conf`. If only a legacy `.py` settings file is
+present, the panel reads its static values without executing it; saving creates
+the new `.conf` file.
+
+GnuChanTerm, GnuChanSoftwareCenter, GnuChanRunner, GnuChanWifi,
+GnuChanNetworkManager and GnuChanTop also edit the flat `.conf` file each
+application reads. The Software Center prefers its `.conf` file and reads an
+older `.py` settings file only when no `.conf` exists. Screenshot and window
+manager settings are saved to their respective `.conf` files using the format
+each application expects.
+
+The GnuChanDesktop category edits its wallpaper path, solid background colour
+and wallpaper style in `~/.config/gnuchan-desktop/panel.conf`. The
+GnuChanFileManager category edits `show_hidden` and `start_location` in the
+`[General]` section of `~/.config/GnuChanFileManager/config.conf`; the panel
+preserves the sectioned format the file manager reads. GnuChanSound has no
+separate settings file: its language follows the shared GnuChan application
+language in `~/.config/GnuChanSettings/system.conf`, configurable from the
+GnuChanSound category.
+
+Run `python3 makefile.py integration-test` from `src/` to verify these
+categories and their settings-file round trips, including creation of the file
+manager's `[General]` section. `python3 makefile.py test` also runs available
+theme-preset tests.
+
+The GnuChanRunner category has a `Run in GnuChanTerm` list. Use `+` to add a
+program name or executable name and `-` to remove the selected entry; selected
+programs open in GnuChanTerm when launched from Runner. The separate Autostart
+category edits GnuChanWM's login command list, including commands with
+arguments, and saves it as `gcl_autostart.all`. Click a list field to open its
+item editor; commands are shown as separate selectable rows, and a selected
+command can be inspected and edited with the keyboard (use Home/End and the
+arrow keys to move through long commands). Use `+` to add an item, `-` to
+remove the selected item, and the mouse wheel to scroll longer lists.
+
+The makefile takes an action as its first argument: `install` (the default),
+`build`, `run` and `uninstall`.
+
+## Dependencies
+
+The makefile probes for these headers and installs the matching package when one
+is missing:
+
+- `build-essential` (gcc)
+- `pkg-config`
+- `libx11-dev` — `X11/Xlib.h`
+- `libxft-dev` — `X11/Xft/Xft.h`
+- `libfreetype-dev` — `ft2build.h`
+- `libxrender-dev` — `X11/extensions/Xrender.h`
+- `libnotify-bin`, `locales`, `tlp`, `pkexec` and `mate-polkit` for the
+  system settings and battery notification features
+- `udisks2` for USB volume mount/unmount actions
+
+The linking is driven by pkg-config for the modules `x11`, `xft`, `xrender`,
+`fontconfig` and `freetype2`.
+
+## X11 only
+
+This program is built directly against X11 (Xlib, Xft and the rest of the X
+stack). It is designed for an X11 session and does not support Wayland: it was
+never tested there, its window management assumes an X server, and no work has
+been done to port it. On a Wayland session it may run through XWayland for basic
+use, but that is not a supported configuration and behaviour there is undefined.
+Run it on X11.
+
+## License
+
+GPL3.

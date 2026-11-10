@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome to GnuChan
+Comment=Explore GnuChan programs and settings
+Exec=gnuchan-welcome
+Icon=help-about
+Terminal=false
+Categories=System;Documentation;
+StartupNotify=true

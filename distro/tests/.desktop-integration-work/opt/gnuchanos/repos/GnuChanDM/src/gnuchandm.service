@@ -1,0 +1,16 @@
+[Unit]
+Description=GnuChanOS Display Manager
+Documentation=file:/usr/local/bin/gnuchandm-session
+After=systemd-user-sessions.service systemd-udev-settle.service
+Before=display-manager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gnuchandm-session
+Restart=on-failure
+RestartSec=2
+KillMode=mixed
+
+[Install]
+Alias=display-manager.service
+WantedBy=graphical.target

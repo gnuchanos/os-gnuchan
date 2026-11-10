@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import sys
+
+_prefix = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_prefix / "lib" / "gnuchan-bluetooth"))
+sys.path.insert(0, str(_prefix))
+
+from gnuchan_bluetooth.cli import main
+
+raise SystemExit(main())

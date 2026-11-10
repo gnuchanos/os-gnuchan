@@ -168,6 +168,10 @@ build-essential
 pkg-config
 python3
 python3-setuptools
+# GnuChanGUI is installed as a system Python toolkit; these satisfy its
+# declared pygame and Pillow runtime imports without downloading at build time.
+python3-pygame
+python3-pil
 ca-certificates
 curl
 gnupg
@@ -191,6 +195,9 @@ libx11-dev
 libxft-dev
 libgtk-3-dev
 libglib2.0-dev
+libgdk-pixbuf-2.0-dev
+libwebp-dev
+librsvg2-common
 libfreetype-dev
 libxcursor-dev
 libimlib2-dev
@@ -221,6 +228,9 @@ libpam-runtime
 # dbus-x11 provides the session bus helpers a desktop session expects; the
 # notification server and every program that talks to it want a session bus.
 dbus-x11
+# GTK's accessibility bridge is needed for applications such as
+# GnuChanSoundRecord to connect to the session accessibility bus cleanly.
+at-spi2-core
 libnotify-bin
 pkexec
 mate-polkit
@@ -344,11 +354,16 @@ wireplumber
 pipewire-pulse
 pipewire-alsa
 pipewire-bin
+pulseaudio-utils
 
 # GnuChanDesktop is a Python/Tk X11 panel; feh applies wallpaper images while
 # xrandr and xsetroot are provided by x11-xserver-utils above.
 python3-tk
 feh
+ffmpeg
+xclip
+udisks2
+bluez
 
 # --- the session's helpers: a browser backend, the pointer theme ---
 alsa-utils

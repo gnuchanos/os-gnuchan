@@ -76,11 +76,13 @@ STRICT="${GNUCHAN_PROGRAMS_STRICT:-0}"
 #: which manager owns the console and restarts it, so a run that did that in the
 #: middle would tear down the session under the remaining installs.
 PROGRAMS="
+GnuChanGUI
 GnuChanTerm
 GnuChanFetch
 GnuChanRunner
 GnuChanWifi
 GnuChanNetworkManager
+GnuChanBluetooth
 GnuChanDock
 GnuChanBrowser
 GnuChanSS
@@ -88,10 +90,12 @@ GnuChanLockScreen
 GnuChanNotification
 GnuChanScreenShoot
 GnuChanSoftwareCenter
+GnuChanImageViewer
 GnuChanTop
 GnuChanSettings
 GnuChanWelcome
 GnuChanSound
+GnuChanSoundRecord
 GnuChanDesktop
 GnuChanFileManager
 GCL
@@ -156,6 +160,18 @@ from pathlib import Path
 import sys
 
 name, repository = sys.argv[1:]
+if name in {"GnuChanGUI", "GnuChanBluetooth", "GnuChanImageViewer",
+            "GnuChanSoundRecord"}:
+    entrypoints = {
+        "GnuChanGUI": ("setup.py",),
+        "GnuChanBluetooth": ("scripts/install.sh",),
+        "GnuChanImageViewer": ("Makefile",),
+        "GnuChanSoundRecord": ("install.sh", "Makefile"),
+    }
+    if not any((Path(repository) / item).is_file()
+               for item in entrypoints[name]):
+        raise SystemExit(f"test install: no install entrypoint for {name}")
+    raise SystemExit(0)
 makefile = Path(repository) / "src" / "makefile.py"
 if not makefile.is_file():
     makefile = Path(repository) / "makefile.py"
@@ -303,8 +319,26 @@ prepare_gcl_tree() {
 install_one() {
     name="$1"
     case "$name" in
+        GnuChanGUI)
+            ( cd "$WORK/$name" &&
+              python3 setup.py install --single-version-externally-managed \
+                  --record /dev/null )
+            return $?
+            ;;
+        GnuChanBluetooth)
+            ( cd "$WORK/$name" &&
+              PREFIX=/usr/local \
+              XDG_DATA_HOME=/usr/local/share \
+              sh ./scripts/install.sh )
+            return $?
+            ;;
         GnuChanSound)
             ( cd "$WORK/$name" && PREFIX=/usr/local sh ./install.sh install )
+            return $?
+            ;;
+        GnuChanSoundRecord)
+            ( cd "$WORK/$name" &&
+              PREFIX=/usr/local sh ./install.sh install )
             return $?
             ;;
         GnuChanDesktop)
@@ -312,7 +346,11 @@ install_one() {
             return $?
             ;;
         GnuChanFileManager)
-            ( cd "$WORK/$name" && sh ./install.sh )
+            ( cd "$WORK/$name" && make install PREFIX=/usr/local )
+            return $?
+            ;;
+        GnuChanImageViewer)
+            ( cd "$WORK/$name" && make install PREFIX=/usr/local )
             return $?
             ;;
         GnuChanWelcome)
@@ -370,7 +408,8 @@ main() {
                 GnuChanTerm|GnuChanFetch|GnuChanRunner|GnuChanWifi|\
                 GnuChanNetworkManager|GnuChanDock|GnuChanBrowser|GnuChanSS|\
                 GnuChanLockScreen|GnuChanNotification|GnuChanScreenShoot|\
-                GnuChanSoftwareCenter|GnuChanTop|GnuChanSettings|\
+                GnuChanSoftwareCenter|GnuChanImageViewer|GnuChanBluetooth|\
+                GnuChanSoundRecord|GnuChanTop|GnuChanSettings|\
                 GnuChanWelcome|GnuChanSound|GnuChanDesktop|\
                 GnuChanFileManager|GCL|\
                 GnuChanWM|GnuChanDM)

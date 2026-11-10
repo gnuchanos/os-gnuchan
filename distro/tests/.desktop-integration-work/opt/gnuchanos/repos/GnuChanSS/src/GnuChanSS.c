@@ -1,0 +1,807 @@
+/*
+ * GnuChanSS.c — the GnuchanOS screen saver.
+ *
+ *     GnuChanSS              run: wait for the desk to go quiet, then show
+ *     GnuChanSS --once       show at once, ignoring the idle timer
+ *     GnuChanSS --effect X   force an effect ("pipe" or "3dwall")
+ *     GnuChanSS --version    print the version and exit
+ *
+ * This is the entry point and the running loop. It owns the X connection, the
+ * full-screen window, the timing, and the one decision that matters — "has
+ * someone come back to the desk?" — and it owns nothing about what is drawn:
+ * that is ss_effect.c, and which one runs is ss_config.c's answer.
+ *
+ * --- the two ways it starts ---
+ *
+ * Without --once it is the SESSION DAEMON: it stays up for the whole session
+ * holding the org.freedesktop.ScreenSaver name, waits until the keyboard and
+ * pointer have been still for IdleSeconds, shows, and — when something ends the
+ * show — goes back to waiting. It is started once at login (GnuChanWM's
+ * autostart list names it) and it is the ONLY thing that shows the saver on
+ * idle, because only a name held for the whole session can be inhibited by a
+ * video. See ss_dbus.h. Running the whole session is the point: a saver that
+ * only came up once the clock said so would not be there to be told "not now".
+ *
+ * With --once it shows the moment it starts and then exits. That is the
+ * explicit path: the saver key (Alt+S), the lid module of GnuChanWM on a
+ * wake-up (OnLidOpenScreenSaver), and anything else that wants the picture now
+ * rather than at the end of a timer. It does NOT wait out IdleSeconds first —
+ * the caller has already decided.
+ *
+ * The idle wait is what keeps a video from being covered, and it is read LIVE:
+ * both the idle clock and the inhibit are re-read every half second, so a key
+ * pressed a moment after the wait began (or a film that started playing) leaves
+ * the desk alone. Showing at once on a timer's word instead — which is what the
+ * window manager used to force with --once — is what dropped the saver over a
+ * hand that had only just started typing again.
+ *
+ * --- the two ways it stops ---
+ *
+ * Any key, any click, or a pointer move ends the show and the screen returns to
+ * what was under it. A SIGTERM or SIGINT (the session asking it to go, the lid
+ * closing) ends it the same way. In every case the window is destroyed and the
+ * process exits 0, so whoever ran it can tell a normal end from a fault.
+ *
+ * --- why it can be paused by a video ---
+ *
+ * While the org.freedesktop.ScreenSaver name is held and an inhibit is active,
+ * nothing is drawn. That is what keeps a pipe show from appearing over a film;
+ * see ss_dbus.c. The inhibit is consulted in BOTH places it matters: the idle
+ * wait does not fire while one is held (a film is watched with nobody touching
+ * the keyboard, so idle time alone would open the saver over it), and the show
+ * does not draw while one appears mid-frame.
+ */
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/scrnsaver.h>
+
+#include "ss_config.h"
+#include "ss_effect.h"
+#include "ss_dbus.h"
+#include "gnuchan_lang.h"
+
+#define GNUCHANSS_VERSION "0.1.0"
+
+/* The pipe effect targets thirty frames a second. The 3D wall uses a separate,
+   slower target below because its ray casting is substantially more expensive. */
+#define SS_FRAME_MICROSECONDS 33333
+#define SS_3DWALL_FRAME_MICROSECONDS 50000
+#define SS_RESUME_GAP_SECONDS 4
+
+/* A pointer move only counts as "someone is here" when it moves more than a
+   few pixels: a saver on a shaky desk must not blink out because a mouse
+   twitched one pixel. */
+#define SS_MOTION_THRESHOLD 4
+
+static volatile sig_atomic_t s_should_stop = 0;
+static int s_clock_sample_valid = 0;
+static int s_clock_error_reported = 0;
+static struct timespec s_last_realtime;
+static struct timespec s_last_monotonic;
+
+static void handle_signal(int signum) {
+    (void)signum;
+    s_should_stop = 1;
+}
+
+static double timespec_seconds(const struct timespec *value) {
+    return (double)value->tv_sec + (double)value->tv_nsec / 1000000000.0;
+}
+
+static int resumed_from_sleep(void) {
+    struct timespec realtime;
+    struct timespec monotonic;
+    if (clock_gettime(CLOCK_REALTIME, &realtime) != 0 ||
+        clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0) {
+        if (!s_clock_error_reported) {
+            perror("gnuchanss: clock_gettime");
+            s_clock_error_reported = 1;
+        }
+        return 0;
+    }
+
+    int resumed = 0;
+    if (s_clock_sample_valid) {
+        double realtime_gap =
+            timespec_seconds(&realtime) - timespec_seconds(&s_last_realtime);
+        double monotonic_gap =
+            timespec_seconds(&monotonic) - timespec_seconds(&s_last_monotonic);
+        resumed = realtime_gap - monotonic_gap > SS_RESUME_GAP_SECONDS;
+    }
+    s_last_realtime = realtime;
+    s_last_monotonic = monotonic;
+    s_clock_sample_valid = 1;
+    return resumed;
+}
+
+/* --- the idle clock ------------------------------------------------------- */
+
+/* How long the keyboard and pointer have been still, in seconds, from the X
+   server. The server keeps this number itself, so it is the same measurement it
+   uses for its own blanking. A server without the extension answers a large
+   value, so the saver starts rather than never on such a machine. */
+static double idle_seconds(Display *display) {
+    static XScreenSaverInfo *info = NULL;
+    if (!info) {
+        info = XScreenSaverAllocInfo();
+        if (!info) {
+            return 0.0;
+        }
+    }
+    Window root = DefaultRootWindow(display);
+    if (!XScreenSaverQueryInfo(display, root, info)) {
+        return 0.0;
+    }
+    return (double)info->idle / 1000.0;
+}
+
+/* Whether a FULLSCREEN window is on the screen right now.
+ *
+ * A film watched in a browser is fullscreen, and the browser here does NOT
+ * inhibit this saver: Qt WebEngine's Chromium opens no session bus at all, so
+ * its Inhibit call — if it makes one — reaches nobody. Relying on the
+ * freedesktop name alone therefore left the saver dropping over a film, which
+ * is exactly the complaint.
+ *
+ * Browser windows are handled separately by browser_window_present(), even
+ * when they are not fullscreen. For other applications, the window manager's
+ * own bookkeeping is read instead. GnuChanWM publishes
+ * _NET_CLIENT_LIST on the root and sets _NET_WM_STATE_FULLSCREEN on a window
+ * that asked for the whole screen, so a fullscreen window means the screen is
+ * being USED — a film, a game, a presentation — and a saver over it is wrong
+ * whether or not anything inhibited us. When there is one, the saver waits
+ * exactly as it waits for an inhibit. The ordinary idle test resumes when no
+ * fullscreen window or browser window remains.
+ *
+ * Every atom is resolved with only_if_exists, so a server or a WM that does not
+ * speak EWMH is simply "no fullscreen window" rather than an error. */
+static int fullscreen_window_present(Display *display) {
+    Window root = DefaultRootWindow(display);
+
+    Atom client_list = XInternAtom(display, "_NET_CLIENT_LIST", True);
+    Atom wm_state = XInternAtom(display, "_NET_WM_STATE", True);
+    Atom fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", True);
+    if (client_list == None || wm_state == None || fullscreen == None) {
+        return 0;
+    }
+
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(display, root, client_list, 0, 4096, False,
+                           XA_WINDOW, &actual_type, &actual_format,
+                           &count, &after, &data) != Success || data == NULL) {
+        return 0;
+    }
+
+    int found = 0;
+    Window *clients = (Window *)data;
+    for (unsigned long i = 0; i < count && !found; i++) {
+        Atom state_type = None;
+        int state_format = 0;
+        unsigned long state_count = 0;
+        unsigned long state_after = 0;
+        unsigned char *state = NULL;
+        if (XGetWindowProperty(display, clients[i], wm_state, 0, 4096, False,
+                               XA_ATOM, &state_type, &state_format,
+                               &state_count, &state_after, &state) == Success &&
+            state != NULL) {
+            Atom *flags = (Atom *)state;
+            for (unsigned long j = 0; j < state_count; j++) {
+                if (flags[j] == fullscreen) {
+                    found = 1;
+                    break;
+                }
+            }
+            XFree(state);
+        }
+    }
+    XFree(data);
+    return found;
+}
+
+/* Browsers do not all implement freedesktop inhibition, and X11 has no
+ * universal signal for video playback in an ordinary window. Recognize common
+ * browser WM_CLASS values automatically, without per-browser settings. */
+static int contains_case_insensitive(const char *text, const char *part) {
+    if (!text || !part || !part[0]) {
+        return 0;
+    }
+    for (; *text; text++) {
+        const char *left = text;
+        const char *right = part;
+        while (*left && *right &&
+               tolower((unsigned char)*left) ==
+                   tolower((unsigned char)*right)) {
+            left++;
+            right++;
+        }
+        if (!*right) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int browser_class(const char *class_name, const char *instance_name) {
+    static const char *browser_names[] = {
+        "browser", "firefox", "chromium", "chrome", "brave", "microsoft-edge",
+        "vivaldi", "opera", "waterfox", "librewolf", "floorp", "palemoon",
+        "seamonkey", "epiphany", "konqueror", "midori", "falkon",
+        "qutebrowser", "tor browser", NULL
+    };
+    for (int i = 0; browser_names[i]; i++) {
+        if (contains_case_insensitive(class_name, browser_names[i]) ||
+            contains_case_insensitive(instance_name, browser_names[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Any open browser window keeps the saver away, including windowed video and
+ * browser implementations that do not send D-Bus inhibition requests. */
+static int browser_window_present(Display *display) {
+    Window root = DefaultRootWindow(display);
+    Atom client_list = XInternAtom(display, "_NET_CLIENT_LIST", True);
+    if (client_list == None) {
+        return 0;
+    }
+
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(display, root, client_list, 0, 4096, False,
+                           XA_WINDOW, &actual_type, &actual_format,
+                           &count, &after, &data) != Success || data == NULL) {
+        return 0;
+    }
+
+    int found = 0;
+    Window *clients = (Window *)data;
+    for (unsigned long i = 0; i < count && !found; i++) {
+        XClassHint hint = {0};
+        if (XGetClassHint(display, clients[i], &hint)) {
+            found = browser_class(hint.res_class, hint.res_name);
+            if (hint.res_name) {
+                XFree(hint.res_name);
+            }
+            if (hint.res_class) {
+                XFree(hint.res_class);
+            }
+        }
+    }
+    XFree(data);
+    return found;
+}
+
+/* Block until the desk has been quiet for `seconds` AND the screen is not in
+   use. A signal that asks the process to stop is respected here too, so a
+   session can end a still-waiting saver without waiting out the timer.
+ *
+ * The extra conditions are the whole reason this is not a plain "sleep
+ * until idle", and both come from the same fact: a film plays with nobody
+ * touching the keyboard, so the idle clock reaches the limit while the person
+ * is watching.
+ *
+ *   - the INHIBIT is how a player that follows the freedesktop protocol —
+ *     mpv, VLC, Firefox — says "not now"; it is read here so the wait does not
+ *     fire while one is held, and the bus is pumped for the same reason it is
+ *     pumped in the show, because that is how the count ever changes.
+ *   - an open browser window or any fullscreen window keeps the screen free
+ *     for content that does not send an inhibition request.
+ *
+ * When neither holds, the ordinary idle test can fire; while the film plays it
+ * simply keeps looping. */
+static void wait_for_idle(Display *display, int seconds) {
+    /* How many reads in a row have said "the desk is quiet". TWO are needed
+       before the wait is over, and that is deliberate: a single read can be the
+       last instant before a hand comes back — the desk was quiet a microsecond
+       ago and the person is already reaching for the keyboard — and firing on
+       it is half of how the saver came up over someone who had only just
+       started typing again. Requiring the quiet to hold across two reads half a
+       second apart costs half a second on a count of minutes, and the re-check
+       inside run_show() closes the gap the rest of the way. */
+    int quiet_readings = 0;
+    while (!s_should_stop) {
+        ss_dbus_pump();
+        /* X's idle clock can include the time the machine spent asleep. */
+        if (resumed_from_sleep()) {
+            XResetScreenSaver(display);
+            XSync(display, False);
+            quiet_readings = 0;
+            continue;
+        }
+        int quiet = (ss_dbus_inhibit_count() == 0 &&
+                     !browser_window_present(display) &&
+                     !fullscreen_window_present(display) &&
+                     idle_seconds(display) >= (double)seconds);
+        if (quiet) {
+            quiet_readings++;
+            if (quiet_readings >= 2) {
+                return;
+            }
+        } else {
+            quiet_readings = 0;
+        }
+        usleep(500 * 1000);   /* half a second between looks */
+    }
+}
+
+/* --- the window ----------------------------------------------------------- */
+
+/* A colour name from the settings, as a pixel. Falls back to black when the
+   name cannot be parsed, so a mistyped colour is black rather than a crash. */
+static unsigned long pixel_of(Display *display, int screen, const char *name,
+                              unsigned long fallback) {
+    Colormap colormap = DefaultColormap(display, screen);
+    XColor colour;
+    XColor exact;
+    if (!name || !name[0]) {
+        return fallback;
+    }
+    if (XAllocNamedColor(display, colormap, name, &colour, &exact)) {
+        return colour.pixel;
+    }
+    return fallback;
+}
+
+/* --- the show ------------------------------------------------------------- */
+
+/* Run the show once: open the window, draw frames until someone comes back.
+   Returns 0 on a normal end. */
+static int run_show(Display *display, int screen, const SsConfig *config,
+                    unsigned long primary, unsigned long background,
+                    int require_idle, int have_randr,
+                    int randr_event_base) {
+    int width = DisplayWidth(display, screen);
+    int height = DisplayHeight(display, screen);
+    Window root = RootWindow(display, screen);
+    unsigned long black = BlackPixel(display, screen);
+
+    /* Take the keyboard and the pointer on the ROOT window, before anything is
+       drawn, and not on the saver's own window as it used to be. Two faults
+       come from doing it here and both of them happened:
+
+         - The root is always viewable, so the grab cannot fail the way a
+           just-mapped window's can (GrabNotViewable). The saver is then
+           guaranteed to receive every key, which is what makes any key end the
+           show.
+         - It is a single-instance lock. A second saver — the saver key pressed
+           twice — cannot take the keyboard, finds that out, and leaves without
+           covering the screen. Before this, the second saver drew itself on top
+           of the first but could not take the keyboard, so the key that should
+           have ended the show went to the first saver behind it and the screen
+           was left covered with nothing able to end it. */
+    /* The grab is retried for a short while before giving up. When this
+       program is started by the window manager's own key, that key is still
+       held down as this runs, and the manager's grab on it can make the very
+       first attempt fail — which used to end the program instantly, so the
+       saver never appeared and the key's auto-repeat started another copy on
+       every repeat. Retrying lets the key be released and the grab succeed.
+       A failure that outlasts the retries means another screen saver really is
+       up, and then this one leaves without covering the screen. */
+    Status keyboard_grab = GrabNotViewable;
+    Status pointer_grab = GrabNotViewable;
+    for (int attempt = 0; attempt < 15 && !s_should_stop; attempt++) {
+        keyboard_grab = XGrabKeyboard(display, root, False, GrabModeAsync,
+                                      GrabModeAsync, CurrentTime);
+        if (keyboard_grab != GrabSuccess) {
+            struct timespec pause = {0, 100 * 1000 * 1000};   /* 100 ms */
+            nanosleep(&pause, NULL);
+            continue;
+        }
+        pointer_grab = XGrabPointer(display, root, False,
+                                    ButtonPressMask | PointerMotionMask,
+                                    GrabModeAsync, GrabModeAsync, None, None,
+                                    CurrentTime);
+        if (pointer_grab == GrabSuccess) {
+            break;
+        }
+        XUngrabKeyboard(display, CurrentTime);
+        struct timespec pause = {0, 100 * 1000 * 1000};
+        nanosleep(&pause, NULL);
+    }
+    if (keyboard_grab != GrabSuccess || pointer_grab != GrabSuccess) {
+        fprintf(stderr,
+                "gnuchanss: could not take the keyboard and pointer "
+                "(keyboard %d, pointer %d); another screen saver is probably "
+                "up\n", (int)keyboard_grab, (int)pointer_grab);
+        return 0;
+    }
+
+    /* THE GRAB TAKES TIME, AND THE DESK MUST STILL BE QUIET WHEN IT IS DONE.
+     *
+     * The retries above can run for a second and a half, and the reading that
+     * let wait_for_idle() return is up to half a second old before that even
+     * begins. A person who sat down and started typing in that gap is typing
+     * into a keyboard this program has just taken: the show opens over their
+     * hands, which is exactly "it sometimes appears while I am typing". So the
+     * clock is read again here, with the grab in hand and before a single pixel
+     * is drawn, and if the desk is no longer past the threshold the grab is
+     * given straight back and nothing is shown — the keys reach the window they
+     * were meant for, because no window was ever put over it.
+     *
+     * Only the daemon asks for this (require_idle); the --once path is the
+     * caller's explicit decision and is not second-guessed. */
+    if (require_idle &&
+        idle_seconds(display) < (double)config->idle_seconds) {
+        XUngrabKeyboard(display, CurrentTime);
+        XUngrabPointer(display, CurrentTime);
+        XFlush(display);
+        return 0;
+    }
+
+    /* An override-redirect window is not decorated or placed by any window
+       manager: the saver covers the whole screen with no frame. The keyboard
+       and the pointer arrive through the grab on the root, taken above. */
+    XSetWindowAttributes attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.override_redirect = True;
+    attributes.background_pixel = black;
+    attributes.event_mask = ExposureMask | StructureNotifyMask;
+
+    Window window = XCreateWindow(
+        display, root, 0, 0, (unsigned int)width, (unsigned int)height, 0,
+        CopyFromParent, InputOutput, CopyFromParent,
+        CWOverrideRedirect | CWBackPixel | CWEventMask, &attributes);
+    if (window == None) {
+        fprintf(stderr, "%s\n", gnuchan_lang_t("ss_cannot_create_window"));
+        XUngrabKeyboard(display, CurrentTime);
+        XUngrabPointer(display, CurrentTime);
+        XFlush(display);
+        return -1;
+    }
+
+    XMapRaised(display, window);
+
+    GC gc = XCreateGC(display, window, 0, NULL);
+    if (!gc) {
+        fprintf(stderr, "%s\n", gnuchan_lang_t("ss_cannot_create_window"));
+        XDestroyWindow(display, window);
+        XUngrabKeyboard(display, CurrentTime);
+        XUngrabPointer(display, CurrentTime);
+        XFlush(display);
+        return -1;
+    }
+
+    /* Every frame is built on this off-screen copy and copied to the window in
+       one operation. Drawing straight to the window shows the picture being
+       made — the background cleared, then the shapes laid on it — and at speed
+       that half-built state is what the eye reads as a flicker. A pixmap of the
+       screen's own depth means the copy across is a plain blit. */
+    Pixmap buffer = XCreatePixmap(display, window,
+                                  (unsigned int)width, (unsigned int)height,
+                                  (unsigned int)DefaultDepth(display, screen));
+    if (buffer == None) {
+        fprintf(stderr, "gnuchanss: cannot create the drawing buffer\n");
+        XFreeGC(display, gc);
+        XDestroyWindow(display, window);
+        XUngrabKeyboard(display, CurrentTime);
+        XUngrabPointer(display, CurrentTime);
+        XFlush(display);
+        return -1;
+    }
+
+    SsEffect effect;
+    ss_effect_init(&effect, config->effect, width, height, primary, background);
+
+    /* The pipe draws over what is there, so the screen starts the background
+       colour; the wall clears itself every frame. Doing it for both is one
+       line and makes the first frame right either way. */
+    XSetForeground(display, gc, background);
+    XFillRectangle(display, buffer, gc, 0, 0,
+                   (unsigned int)width, (unsigned int)height);
+    XFlush(display);
+
+    /* Where the pointer is when the show begins, so the FIRST real move can
+       end the show.
+     *
+     * This used to start at -1, which meant the first MotionNotify was taken
+     * as "the position we do not know yet" and only recorded, and the move
+     * that ended the show was the SECOND one. A person who saw the saver come
+     * up and gave the mouse one quick push therefore watched it stay: the one
+     * move they made was swallowed as the baseline and there was no second
+     * move to compare against. Querying the pointer here makes the baseline
+     * the real position, so every motion after it — the first one included —
+     * is measured against where the pointer actually was, and one real move
+     * ends the show. */
+    int last_x = -1;
+    int last_y = -1;
+    {
+        Window root_return, child_return;
+        int root_x, root_y, window_x, window_y;
+        unsigned int mask;
+        if (XQueryPointer(display, root, &root_return, &child_return,
+                          &root_x, &root_y, &window_x, &window_y, &mask)) {
+            last_x = root_x;
+            last_y = root_y;
+        }
+    }
+    int running = 1;
+
+    while (running && !s_should_stop) {
+        /* If sleep started during a show, restore the desktop on wake. */
+        if (resumed_from_sleep()) {
+            XResetScreenSaver(display);
+            XSync(display, False);
+            running = 0;
+            break;
+        }
+
+        /* Everything the user did arrives as events; any of them ends the
+           show. A pointer move has to be a real one (see SS_MOTION_THRESHOLD). */
+        while (XPending(display) > 0) {
+            XEvent event;
+            XNextEvent(display, &event);
+            if (have_randr &&
+                event.type == randr_event_base + RRScreenChangeNotify) {
+                XRRUpdateConfiguration(&event);
+                int new_width = DisplayWidth(display, screen);
+                int new_height = DisplayHeight(display, screen);
+                if (new_width > 0 && new_height > 0 &&
+                    (new_width != width || new_height != height)) {
+                    Pixmap resized = XCreatePixmap(
+                        display, window, (unsigned int)new_width,
+                        (unsigned int)new_height,
+                        (unsigned int)DefaultDepth(display, screen));
+                    if (resized != None) {
+                        XMoveResizeWindow(display, window, 0, 0,
+                                          (unsigned int)new_width,
+                                          (unsigned int)new_height);
+                        XFreePixmap(display, buffer);
+                        buffer = resized;
+                        width = new_width;
+                        height = new_height;
+                        effect.reset(&effect, width, height);
+                        XSetForeground(display, gc, background);
+                        XFillRectangle(display, buffer, gc, 0, 0,
+                                       (unsigned int)width,
+                                       (unsigned int)height);
+                    }
+                }
+                continue;
+            }
+            switch (event.type) {
+            case KeyPress:
+            case ButtonPress:
+                running = 0;
+                break;
+            case MotionNotify: {
+                int dx = event.xmotion.x - last_x;
+                int dy = event.xmotion.y - last_y;
+                if (last_x >= 0 &&
+                    (abs(dx) > SS_MOTION_THRESHOLD ||
+                     abs(dy) > SS_MOTION_THRESHOLD)) {
+                    running = 0;
+                }
+                last_x = event.xmotion.x;
+                last_y = event.xmotion.y;
+                break;
+            }
+            default:
+                break;
+            }
+        }
+        if (!running) {
+            break;
+        }
+
+        /* A video playing holds an inhibit: do not draw, but keep answering the
+           bus so this state can change. See ss_dbus.c. A fullscreen window is
+           the same message from a program that never took the name at all — a
+           browser — and it ENDS the show rather than pausing it, because the
+           screen is wanted back for what is on it. */
+        ss_dbus_pump();
+        if (browser_window_present(display) ||
+            fullscreen_window_present(display)) {
+            running = 0;
+            break;
+        }
+        if (ss_dbus_inhibit_count() > 0) {
+            struct timespec pause = {0, 250 * 1000 * 1000};
+            nanosleep(&pause, NULL);
+            continue;
+        }
+
+        /* The frame is built on the off-screen copy, then copied over in one
+           operation, so the window is only ever shown whole. */
+        effect.draw(&effect, display, buffer, gc);
+        XCopyArea(display, buffer, window, gc, 0, 0,
+                  (unsigned int)width, (unsigned int)height, 0, 0);
+        XFlush(display);
+
+        long frame_microseconds =
+            config->effect == SS_EFFECT_3DWALL
+                ? SS_3DWALL_FRAME_MICROSECONDS : SS_FRAME_MICROSECONDS;
+        struct timespec frame = {
+            frame_microseconds / 1000000,
+            (frame_microseconds % 1000000) * 1000
+        };
+        nanosleep(&frame, NULL);
+    }
+
+    XUngrabKeyboard(display, CurrentTime);
+    XUngrabPointer(display, CurrentTime);
+    ss_effect_free(&effect);
+    XFreePixmap(display, buffer);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+    XFlush(display);
+    return 0;
+}
+
+/* --- the program ---------------------------------------------------------- */
+
+int main(int argc, char **argv) {
+    int run_once = 0;
+    const char *forced_effect = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--once") == 0) {
+            run_once = 1;
+        } else if (strcmp(argv[i], "--effect") == 0 && i + 1 < argc) {
+            forced_effect = argv[++i];
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("GnuChanSS %s\n", GNUCHANSS_VERSION);
+            return 0;
+        } else if (strcmp(argv[i], "--help") == 0) {
+            printf("usage: GnuChanSS [--once] [--effect pipe|3dwall] "
+                   "[--version]\n"
+                   "\n"
+                   "Shows a full-screen screen saver after the keyboard and\n"
+                   "pointer have been idle for IdleSeconds (see\n"
+                   "~/.config/GnuChanSS/GnuChanSS.conf). Any key, click or\n"
+                   "pointer move ends it. A program playing a video can hold\n"
+                   "it off through the freedesktop ScreenSaver name.\n");
+            return 0;
+        }
+    }
+
+    gnuchan_lang_init();
+
+    SsConfig config;
+    if (ss_config_load_default(&config) != 0 && config.error[0]) {
+        /* A file that was there and could not be read is worth saying; a
+           missing file is not, because the defaults are what was wanted. */
+        fprintf(stderr, "gnuchanss: %s\n", config.error);
+    }
+
+    /* A forced effect overrides the file, for a person trying one out from a
+       shell. */
+    if (forced_effect) {
+        config.effect = ss_effect_of(forced_effect);
+    }
+
+    Display *display = XOpenDisplay(NULL);
+    if (!display) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 gnuchan_lang_t("ss_cannot_open_display"),
+                 getenv("DISPLAY") ? getenv("DISPLAY") : "(unset)");
+        fprintf(stderr, "%s\n", msg);
+        return 1;
+    }
+    int screen = DefaultScreen(display);
+    int randr_event_base = 0;
+    int randr_error_base = 0;
+    int have_randr = XRRQueryExtension(display, &randr_event_base,
+                                       &randr_error_base);
+    if (have_randr) {
+        XRRSelectInput(display, RootWindow(display, screen),
+                       RRScreenChangeNotifyMask);
+    }
+
+    /* A signal is a clean way in: the session may ask the saver to stop when
+       the user logs out or the lid closes. */
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = handle_signal;
+    /* SA_RESTART is left off so a signal interrupts the frame's sleep and the
+       loop can see the flag. */
+    if (sigaction(SIGTERM, &action, NULL) != 0 ||
+        sigaction(SIGINT, &action, NULL) != 0) {
+        fprintf(stderr, "%s\n",
+                gnuchan_lang_t("ss_cannot_install_signals"));
+        XCloseDisplay(display);
+        return 1;
+    }
+
+    /* Take the ScreenSaver name before the idle wait, so a video that starts
+       while the saver is still waiting can inhibit it. A failure here is not
+       fatal: the saver still shows, it just cannot be paused. */
+    if (config.inhibit && ss_dbus_claim() != 1) {
+        fprintf(stderr,
+                "gnuchanss: could not take the ScreenSaver name; a video "
+                "will not be able to pause the show\n");
+    }
+
+    unsigned long primary = pixel_of(display, screen, config.primary,
+                                     WhitePixel(display, screen));
+    unsigned long background = pixel_of(display, screen, config.background,
+                                        BlackPixel(display, screen));
+
+    if (run_once) {
+        /* Show now, once, and exit. The explicit path — see the file comment. */
+        if (!s_should_stop) {
+            /* 0: the caller has already decided, so the idle clock is not
+               second-guessed — see run_show's require_idle. */
+            run_show(display, screen, &config, primary, background, 0,
+                     have_randr, randr_event_base);
+        }
+    } else {
+        /* THE SESSION DAEMON. It loops rather than showing once and exiting,
+           and that is the whole fix for two faults:
+         *
+         *   - The name org.freedesktop.ScreenSaver is held for the WHOLE
+         *     session, so a video player's Inhibit call — made against that
+         *     name — actually reaches us. A saver that exited after each show
+         *     was not there to be inhibited, so every film got a saver dropped
+         *     over it once the idle clock reached the limit.
+         *
+         *   - The idle clock and the inhibit are re-read every half second
+         *     before anything is drawn, so a hand that starts typing a moment
+         *     after the wait began is noticed and the desk is left alone.
+         *
+         * run_show() returns when something ends the show (a key, a click, a
+         * pointer move); the loop then goes straight back to waiting, which
+         * arms the saver for the next quiet spell. */
+        while (!s_should_stop) {
+            /* Read the settings again BEFORE each show, so the daemon shows
+               what the file says now and not what it said at login.
+             *
+             * This is the whole reason the daemon and the --once path used to
+             * disagree: --once reads the file every time it runs, and the
+             * daemon read it exactly once, at session start, then held that
+             * copy for as long as the session lived. Editing the effect — asking
+             * for 3dwall instead of pipe — therefore changed the show raised by
+             * the key and left the automatic one on the old choice, so the same
+             * desk showed two different pictures depending on what raised it.
+             * Re-reading here makes the file the single answer for both paths:
+             * whatever it says when the desk goes quiet is what comes up. A
+             * read that fails leaves the last good settings and says so, exactly
+             * as the first read does. */
+            SsConfig fresh;
+            if (ss_config_load_default(&fresh) == 0) {
+                config = fresh;
+                primary = pixel_of(display, screen, config.primary,
+                                   WhitePixel(display, screen));
+                background = pixel_of(display, screen, config.background,
+                                      BlackPixel(display, screen));
+            }
+            wait_for_idle(display, config.idle_seconds);
+            if (s_should_stop) {
+                break;
+            }
+            run_show(display, screen, &config, primary, background, 1,
+                     have_randr, randr_event_base);
+            /* A short pause before looking again. A show that ended because the
+               user came back leaves the idle clock at zero, so the next
+               wait_for_idle() blocks and this costs nothing. The pause is for
+               the OTHER case: run_show() also returns at once when it could not
+               take the keyboard — another screen saver is up — and without this
+               the loop would spin, re-deciding to show and failing to grab, as
+               fast as the processor allows. Half a second bounds that. */
+            struct timespec retry = {0, 500 * 1000 * 1000};
+            nanosleep(&retry, NULL);
+        }
+    }
+
+    ss_dbus_release();
+    XCloseDisplay(display);
+    return 0;
+}

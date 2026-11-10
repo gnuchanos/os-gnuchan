@@ -1,0 +1,214 @@
+/*
+ * wm_core.h — the X connection, the event loop, and the shared state modules
+ * are given.
+ *
+ * The core owns exactly one of each X-wide thing: the Display, the root
+ * window, the event loop, and the atom table every module looks atoms up in.
+ * Modules never open their own display and never run their own event loop.
+ */
+#ifndef GNUCHANWM_CORE_H
+#define GNUCHANWM_CORE_H
+
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include "wm_module.h"
+#include "wm_style.h"
+#include "wm_frame.h"
+#include "wm_config.h"
+#include "wm_workspace.h"
+#include "wm_compositor.h"
+
+/* The window state the core selects on the root. */
+#define WM_EVENT_MASK (SubstructureRedirectMask | SubstructureNotifyMask | \
+                       StructureNotifyMask | PropertyChangeMask | \
+                       EnterWindowMask | LeaveWindowMask | FocusChangeMask | \
+                       ButtonPressMask)
+
+typedef struct WmModuleList {
+    const WmModule *items[WM_MAX_MODULES];
+    int count;
+} WmModuleList;
+
+struct WmCore {
+    Display *display;
+    int screen;
+    Window root;
+
+    Atom net_supported;
+    Atom net_supporting_wm_check;
+    Atom net_wm_name;
+    Atom net_active_window;
+    Atom net_client_list;
+    Atom net_wm_window_type;
+    Atom net_wm_window_type_dock;
+    Atom net_frame_extents;
+    /* The EWMH desktop atoms. _NET_CURRENT_DESKTOP and _NET_NUMBER_OF_DESKTOPS
+       are published on the root so a pager or a dock can tell which workspace
+       is current and how many there are; _NET_WM_DESKTOP is published on each
+       managed client so such a program can tell which workspace THAT window is
+       on. Without them a dock shows every window on every workspace at once,
+       which is the confusion this set exists to remove. */
+    Atom net_current_desktop;
+    Atom net_number_of_desktops;
+    Atom net_wm_desktop;
+    /* The EWMH state pair: the property a client writes to ask for fullscreen,
+       and the fullscreen member of it. Both are interned here because two
+       places name them — the manage module reads the ClientMessage, and the
+       frame module writes the state back into the property — and a manager
+       that interned them twice could get two different atoms for one name and
+       never see its own writes. */
+    Atom net_wm_state;
+    Atom net_wm_state_fullscreen;
+    Atom wm_state;
+    Atom wm_protocols;
+    Atom wm_delete_window;
+    Atom wm_take_focus;
+    Atom utf8_string;
+
+    /* The window that advertises this manager through
+       _NET_SUPPORTING_WM_CHECK. Kept because it is one of the manager's own
+       windows, and something has to be able to tell: the menu's logout walk
+       must leave it alone, and it is taken down when the session ends. Killing
+       a window this process owns closes this process's own connection to the
+       server, which is the whole reason the walk has to know. */
+    Window check_window;
+
+    int running;
+
+    /* The window that currently has input focus, 0 when none. */
+    Window focused;
+
+    /* Every window that has had the focus, most recent first, with no window
+       appearing twice. The switcher key walks this rather than the frame
+       table: the table is creation order, and creation order has nothing to
+       do with what the user was doing. Alt+Tab has to go back to the window
+       the user was last in — that is the only order in which one press of the
+       key undoes one move. */
+    Window focus_history[WM_MAX_FRAMES];
+    int focus_history_count;
+
+    /* The picture the whole desktop shares: the palette, the font and the
+       one graphics context everything draws with. Modules never create their
+       own — a second palette is how one desktop starts looking like two. */
+    WmStyle style;
+    GC gc;
+    WmConfig config;                        /* the parsed settings file */
+
+    /* The pointer set on the root. Kept so the module that made it can free
+       it; a cursor allocated and forgotten is a leak per session. */
+    Cursor root_cursor;
+
+    /* Every managed window, one frame each. The table lives on the core rather
+       than in a module because three modules need it: manage fills it, focus
+       asks it which client a frame holds, and the title bar's clicks are
+       answered by it. */
+    WmFrame frames[WM_MAX_FRAMES];
+    int frame_count;
+
+    /* Unmap events to accept without treating them as the user hiding a
+       window. Reparenting a mapped client makes the server unmap it, and that
+       one unmap is ours, not the program's. */
+    int ignore_unmaps;
+
+    int width;                /* the desktop's size; the wallpaper         */
+    int height;               /* restarts from these when the screen is    */
+                              /* resized                                   */
+    /* The current root-screen geometry, kept in sync with RandR changes so
+       fullscreen windows and the desktop use the resolution the user selected. */
+    int desktop_width;
+    int desktop_height;
+    int current_workspace;
+
+    WmModuleList modules;
+};
+
+int  wm_core_init(WmCore *core);
+
+/* Run every registered module's init, in registration order. Separate from
+   wm_core_init() because a module is registered on the core before the core
+   has a display, and a module's init needs that display to exist. */
+int  wm_core_start(WmCore *core);
+
+/* Read and dispatch exactly one event. Split out of wm_core_run() so the
+   caller can stop between events — see GnuChanWM.c. */
+void wm_core_step(WmCore *core);
+void wm_core_run(WmCore *core);
+void wm_core_shutdown(WmCore *core);
+
+Atom wm_atom(WmCore *core, const char *name);
+
+/* wm_core.c — publish how many desktops there are and which one is current,
+   on the root, as _NET_NUMBER_OF_DESKTOPS and _NET_CURRENT_DESKTOP. Read by a
+   pager or a dock. Called at start-up and again whenever the current desktop
+   changes (wm_workspace.c) or the number does (a reload). */
+void core_publish_desktops(WmCore *core);
+
+/* Register a module. Call before wm_core_init(). Returns 0 on success. */
+int  wm_register(WmCore *core, const WmModule *module);
+
+/* focus is the one piece of state every other module reads and writes. */
+void wm_focus_set(WmCore *core, Window window);
+void wm_focus_click(WmCore *core, Window window);
+
+/* The most recently used window other than the focused one, or NULL when
+   there is none. This is what Alt+Tab goes to: the window the user was in
+   before, not the next one in the frame table. */
+WmFrame *wm_focus_previous(WmCore *core);
+
+/* Forget a window that no longer exists, so the switcher cannot activate a
+   window that has been closed. Called when a window is destroyed. */
+void wm_focus_forget(WmCore *core, Window window);
+
+/* wm_manage.c — re-draws a window's border in the focused/unfocused colour. */
+void wm_manage_frame(WmCore *core, Window window);
+
+/* --- the module entry points, one per file -------------------------------- */
+extern const WmModule wm_manage_module;   /* wm_manage.c  */
+extern const WmModule wm_focus_module;    /* wm_focus.c   */
+extern const WmModule wm_keys_module;     /* wm_keys.c    */
+extern const WmModule wm_desktop_module;  /* wm_desktop.c */
+extern const WmModule wm_frame_module;    /* wm_frame.c   */
+extern const WmModule wm_autostart_module;/* wm_autostart.c */
+extern const WmModule wm_idle_module;     /* wm_idle.c    */
+extern const WmModule wm_menu_module;     /* wm_menu.c    */
+extern const WmModule wm_theme_module;    /* wm_theme.c   */
+extern const WmModule wm_config_module;   /* wm_config_file.c */
+extern const WmModule wm_workspace_module;/* wm_workspace.c   */
+extern const WmModule wm_input_module;    /* wm_input.c   */
+extern const WmModule wm_tray_module;     /* wm_tray.c    */
+extern const WmModule wm_switcher_module; /* wm_switcher.c */
+extern const WmModule wm_compositor_module;/* wm_compositor.c */
+extern const WmModule wm_randr_module;    /* wm_randr.c    */
+
+/* wm_menu.c — open the desktop's menu at a point on the screen, and say
+   whether one is already up. Public because the menu is the desktop's answer
+   to a button rather than something the menu module can only do to itself. */
+void wm_menu_open(WmCore *core, int root_x, int root_y);
+int  wm_menu_is_open(void);
+
+/* wm_config_file.c — the window a message is shown in, or None when none is
+   up. Read by the menu's logout walk, which must skip the windows this
+   manager owns: killing one of them closes this manager's own connection, and
+   every kill queued after it is then discarded. */
+Window wm_config_error_window(void);
+
+/* wm_config_file.c — put a message on the screen, in a window of the
+   manager's own, for a problem the user has to see rather than read in a log.
+ *
+ * A window manager started by a display manager has no terminal: a fault that
+ * only reaches stderr is a fault nobody sees, and the desktop simply looks
+ * wrong with nothing to say why. Every module that can fail in a way the user
+ * must act on routes its message here.
+ *
+ * `title` is the heading, `detail` the line under it and `where` the place the
+ * message is about — a path, a setting, or empty. One message is up at a time:
+ * a second replaces the first. The window is closed by a click or a key. */
+void wm_config_show_message(WmCore *core, const char *title,
+                            const char *detail, const char *where);
+
+/* wm_input.c — push the touchpad settings into the running X server again.
+   Called when the settings script is reloaded, so a changed TapToClick takes
+   effect on the next save rather than at the next login. */
+void wm_input_apply(WmCore *core);
+
+#endif /* GNUCHANWM_CORE_H */
