@@ -89,15 +89,17 @@ validate_program_repos() {
     GnuChanScreenShoot
     GnuChanSoftwareCenter
     GnuChanImageViewer
+    GnuChanTop
+    GnuChanSettings
     GnuChanWelcome
     GnuChanSound
     GnuChanSoundRecord
     GnuChanDesktop
     GnuChanFileManager
-    GnuChanTop
-    GnuChanSettings
+    GnuChanDiskManager
     GCL
     GnuChanWM
+    GnuChanPlymouth
     GnuChanDM
     "
     
@@ -110,11 +112,16 @@ validate_program_repos() {
         prog=$(echo "$prog" | xargs)
         [ -z "$prog" ] && continue
         
-        # Get repo name (GCL -> gcl)
+        # Get repo name where GitHub repository name differs from the program name.
         repo="$prog"
-        if [ "$prog" = "GCL" ]; then
-            repo="gcl"
-        fi
+        case "$prog" in
+            GCL)              repo="gcl" ;;
+            GnuChanBluetooth) repo="gnuchanbluetooth" ;;
+            GnuChanRunner)    repo="gnuchanrunner" ;;
+            GnuChanSettings)  repo="gnuchansettings" ;;
+            GnuChanSound)     repo="gnuchansound" ;;
+            GnuChanTop)       repo="gnuchantop" ;;
+        esac
         
         # Check local repository first
         if [ -d "$HERE/repos/$prog" ] || has_staged_sibling_checkout "$prog"; then

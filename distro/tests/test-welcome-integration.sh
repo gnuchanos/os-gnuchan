@@ -34,7 +34,7 @@ AUTOSTART="$DESTDIR/etc/xdg/autostart/gnuchan-welcome.desktop"
 grep -Fxq 'Exec=GnuChanWelcome' "$DESKTOP"
 grep -Fxq 'Exec=GnuChanWelcome --first-run' "$AUTOSTART"
 "$LAUNCHER" --version
-"$LAUNCHER" --check-config --config "$REPO/examples/welcome.conf"
+"$LAUNCHER" --check-config --config "$REPO/src/config/config.conf"
 
 grep -Fq 'GnuChanWelcome' "$DISTRO/GnuChanPrograms.sh"
 grep -Fq 'GnuChanWelcome' "$DISTRO/stage-program-checkouts.sh"

@@ -98,8 +98,10 @@ GnuChanSound
 GnuChanSoundRecord
 GnuChanDesktop
 GnuChanFileManager
+GnuChanDiskManager
 GCL
 GnuChanWM
+GnuChanPlymouth
 GnuChanDM
 "
 
@@ -166,7 +168,7 @@ if name in {"GnuChanGUI", "GnuChanBluetooth", "GnuChanImageViewer",
         "GnuChanGUI": ("setup.py",),
         "GnuChanBluetooth": ("scripts/install.sh",),
         "GnuChanImageViewer": ("Makefile",),
-        "GnuChanSoundRecord": ("install.sh", "Makefile"),
+        "GnuChanSoundRecord": ("src/makefile.py",),
     }
     if not any((Path(repository) / item).is_file()
                for item in entrypoints[name]):
@@ -251,11 +253,18 @@ fetch_one() {
 
     # The repository's name, where it differs from the program's: the GCL
     # language's repository is `gcl`, in lower case, while its directory here
-    # is GCL so that the program list reads as program names.
+    # is GCL so that the program list reads as program names. Several other
+    # repositories also use all-lowercase names on GitHub.
     repo="$name"
-    if [ "$name" = "GCL" ]; then
-        repo=gcl
-    fi
+    case "$name" in
+        GCL)             repo="gcl" ;;
+        GnuChanBluetooth) repo="gnuchanbluetooth" ;;
+        GnuChanRunner)   repo="gnuchanrunner" ;;
+        GnuChanSettings) repo="gnuchansettings" ;;
+        GnuChanSound)    repo="gnuchansound" ;;
+        GnuChanTop)      repo="gnuchantop" ;;
+        GnuChanDiskManager) repo="GnuChanDiskManager" ;;
+    esac
 
     rm -rf "$target"
 
@@ -265,8 +274,40 @@ fetch_one() {
         prepare_test_install "$name" "$target" || return 1
         return 0
     fi
+    # Also check lowercase/alternate repo names for programs whose GitHub
+    # repository names differ from the canonical program name.
     if [ "$name" = "GCL" ] && [ -d "$SRC/gcl" ]; then
         cp -a "$SRC/gcl" "$target"
+        rm -rf "$target/.git"
+        prepare_test_install "$name" "$target" || return 1
+        return 0
+    fi
+    if [ "$name" = "GnuChanBluetooth" ] && [ -d "$SRC/gnuchanbluetooth" ]; then
+        cp -a "$SRC/gnuchanbluetooth" "$target"
+        rm -rf "$target/.git"
+        prepare_test_install "$name" "$target" || return 1
+        return 0
+    fi
+    if [ "$name" = "GnuChanRunner" ] && [ -d "$SRC/gnuchanrunner" ]; then
+        cp -a "$SRC/gnuchanrunner" "$target"
+        rm -rf "$target/.git"
+        prepare_test_install "$name" "$target" || return 1
+        return 0
+    fi
+    if [ "$name" = "GnuChanSettings" ] && [ -d "$SRC/gnuchansettings" ]; then
+        cp -a "$SRC/gnuchansettings" "$target"
+        rm -rf "$target/.git"
+        prepare_test_install "$name" "$target" || return 1
+        return 0
+    fi
+    if [ "$name" = "GnuChanSound" ] && [ -d "$SRC/gnuchansound" ]; then
+        cp -a "$SRC/gnuchansound" "$target"
+        rm -rf "$target/.git"
+        prepare_test_install "$name" "$target" || return 1
+        return 0
+    fi
+    if [ "$name" = "GnuChanTop" ] && [ -d "$SRC/gnuchantop" ]; then
+        cp -a "$SRC/gnuchantop" "$target"
         rm -rf "$target/.git"
         prepare_test_install "$name" "$target" || return 1
         return 0
@@ -338,7 +379,7 @@ install_one() {
             ;;
         GnuChanSoundRecord)
             ( cd "$WORK/$name" &&
-              PREFIX=/usr/local sh ./install.sh install )
+              PREFIX=/usr/local python3 ./src/makefile.py install )
             return $?
             ;;
         GnuChanDesktop)
@@ -357,6 +398,16 @@ install_one() {
             ( cd "$WORK/$name" && sh ./install.sh )
             return $?
             ;;
+        GnuChanDiskManager)
+            ( cd "$WORK/$name" && python3 ./makefile.py install )
+            return $?
+            ;;
+        GnuChanPlymouth)
+            ( cd "$WORK/$name" &&
+              GNUCHANOS_ASSETS="${GNUCHANOS_ASSETS:-/opt/gnuchanos/assets}" \
+              python3 ./makefile.py install )
+            return $?
+            ;;
     esac
     if [ "$name" = "GCL" ]; then
         prepare_gcl_tree "$WORK/$name"
@@ -366,6 +417,33 @@ install_one() {
         return 1
     }
     ( cd "$(dirname "$makefile")" && python3 "$(basename "$makefile")" install )
+}
+
+record_installed_version() {
+    name="$1"
+    source_version="$WORK/$name/version.txt"
+    if [ ! -f "$source_version" ]; then
+        warn "$name has no version.txt; keeping its existing version record"
+        return 0
+    fi
+    version=$(tr -d '[:space:]' < "$source_version")
+    printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' || {
+        warn "$name has an invalid version.txt; refusing to record '$version'"
+        return 1
+    }
+
+    version_dir=/usr/local/share/gnuchanos/versions
+    install -d "$version_dir" || return 1
+    temporary="$version_dir/.$name.txt.$$"
+    if ! printf '%s\n' "$version" > "$temporary"; then
+        rm -f "$temporary"
+        return 1
+    fi
+    if ! mv -f "$temporary" "$version_dir/$name.txt"; then
+        rm -f "$temporary"
+        return 1
+    fi
+    return 0
 }
 
 # --- the run ------------------------------------------------------------------
@@ -411,8 +489,8 @@ main() {
                 GnuChanSoftwareCenter|GnuChanImageViewer|GnuChanBluetooth|\
                 GnuChanSoundRecord|GnuChanTop|GnuChanSettings|\
                 GnuChanWelcome|GnuChanSound|GnuChanDesktop|\
-                GnuChanFileManager|GCL|\
-                GnuChanWM|GnuChanDM)
+                GnuChanFileManager|GnuChanDiskManager|GCL|GnuChanGUI|\
+                GnuChanPlymouth|GnuChanWM|GnuChanDM)
                     selected="$selected $requested"
                     ;;
                 *)
@@ -474,7 +552,12 @@ main() {
         fi
 
         if install_one "$name"; then
-            installed="$installed $name"
+            if record_installed_version "$name"; then
+                installed="$installed $name"
+            else
+                warn "$name installed but its version record could not be updated"
+                failed="$failed $name"
+            fi
         else
             warn "$name installation failed; see its output above"
             failed="$failed $name"

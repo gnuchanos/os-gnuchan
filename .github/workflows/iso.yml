@@ -67,28 +67,45 @@ jobs:
         run: |
           set -eu
           programs="
+          GnuChanGUI
           GnuChanTerm
           GnuChanFetch
           GnuChanRunner
           GnuChanWifi
           GnuChanNetworkManager
+          GnuChanBluetooth
           GnuChanDock
           GnuChanBrowser
           GnuChanSS
           GnuChanLockScreen
           GnuChanNotification
+          GnuChanScreenShoot
+          GnuChanSoftwareCenter
+          GnuChanImageViewer
           GnuChanTop
           GnuChanSettings
+          GnuChanWelcome
+          GnuChanSound
+          GnuChanSoundRecord
+          GnuChanDesktop
+          GnuChanFileManager
+          GnuChanDiskManager
           GCL
           GnuChanWM
+          GnuChanPlymouth
           GnuChanDM
           "
           mkdir -p distro/repos
           for name in $programs; do
             repo="$name"
-            if [ "$name" = "GCL" ]; then
-              repo=gcl
-            fi
+            case "$name" in
+              GCL)              repo=gcl ;;
+              GnuChanBluetooth) repo=gnuchanbluetooth ;;
+              GnuChanRunner)    repo=gnuchanrunner ;;
+              GnuChanSettings)  repo=gnuchansettings ;;
+              GnuChanSound)     repo=gnuchansound ;;
+              GnuChanTop)       repo=gnuchantop ;;
+            esac
             if [ -n "${TOKEN:-}" ]; then
               url="https://x-access-token:${TOKEN}@github.com/gnuchanos/${repo}.git"
             else

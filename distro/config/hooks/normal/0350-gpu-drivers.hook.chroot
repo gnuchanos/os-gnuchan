@@ -47,9 +47,9 @@ if ! systemctl enable "$UNIT"; then
 fi
 log "enabled $UNIT"
 
-# Download each driver and its dependency closure into a family-specific pool.
-# This never installs proprietary packages into the built image. The common
-# pool contains only DKMS/build/kernel-header dependencies.
+# Download nvidia-detect and each driver branch with its dependency closure into
+# family-specific pools. This never installs proprietary packages into the
+# built image. The common pool contains DKMS/build/kernel-header dependencies.
 install -d "$POOL"
 log "staging optional driver packages into $POOL"
 
@@ -66,7 +66,12 @@ stage() {
 }
 
 stage nvidia-driver "$POOL/nvidia"
-stage nvidia-legacy-470xx-driver "$POOL/nvidia-legacy"
+stage nvidia-vulkan-icd "$POOL/nvidia"
+stage nvidia-detect "$POOL/nvidia-detect"
+stage nvidia-tesla-535-driver "$POOL/nvidia-tesla-535-driver"
+stage nvidia-legacy-470xx-driver "$POOL/nvidia-legacy-470xx-driver"
+stage nvidia-legacy-390xx-driver "$POOL/nvidia-legacy-390xx-driver"
+stage nvidia-legacy-340xx-driver "$POOL/nvidia-legacy-340xx-driver"
 for package in linux-headers-amd64 dkms build-essential; do
     stage "$package" "$POOL/common"
 done

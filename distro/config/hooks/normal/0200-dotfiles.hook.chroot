@@ -2,10 +2,10 @@
 # GnuchanOS - install the desktop's own files from dotfile/.
 #
 # The dotfile scripts install themselves and each reads its own inputs, so what
-# this does is run them in the two contexts their targets live in: the boot
-# themes are the machine's (GRUB, Plymouth) and are run as root, and the themes
-# and settings a session loads are the live user's and are run with HOME and the
-# XDG directories pointed at that user's home. Running them all as root would
+# this does is run them in the two contexts their targets live in: the GRUB
+# theme is the machine's and is run as root, and the themes and settings a
+# session loads are the live user's and are run with HOME and the XDG
+# directories pointed at that user's home. Running them all as root would
 # put the GTK theme, the icon theme and the cursor theme in /root, where the
 # session that logs in as the live user would never look.
 #
@@ -60,7 +60,9 @@ install -d /boot/grub
 # filesystems are not mounted here, so update-grub cannot probe the root device.
 # The installer regenerates grub.cfg after mounting the target's filesystems.
 run_as_root "$SRC/GRUB_THEME/settings_grub.py" --stage-only
-run_as_root "$SRC/PLYMOUTH_THEME/settings_plymouth.py"
+# GnuChanPlymouth is installed with the program repositories and is ordered
+# after graphics-driver initialization, so the standard Plymouth theme is not
+# installed into the initramfs.
 
 # --- themes and settings a session reads (the live user's) -------------------
 
@@ -92,30 +94,22 @@ run_as_user "$SRC/XTERM/settings_xterm.py"
 # (Xorg snippets, module options) and are the machine's, not a user's.
 run_as_root "$SRC/TOUCHPAD_SETTINGS/settings_touchpad.py"
 
-# --- the per-machine hardware fixes ------------------------------------------
+# --- opt-in Vostro A860 hardware fixes ---------------------------------------
 
-# Everything under dotfile/ has to be ON the image, ready and installed, and
-# that includes the two fixes that are not a theme: the Intel 965GM graphics
-# fix (gpu_fix.py) and the Atheros AR242x wifi fix (wifi_fix.py). They were
-# written for one laptop but they are the repository's own programs, and an
-# image that shipped the themes and left the fixes behind would be missing
-# exactly the files that make a specific machine work.
-#
-# gpu_fix.py is run on its OWN and not only by this hook's error handling:
-# inside the chroot there is no /dev/dri and no running X, so its probe cannot
-# confirm the accelerator and it writes the known-good configuration anyway
-# (see its "belirlenemedi" branch). That is the behaviour wanted here - the
-# file lands in the image and takes effect at first boot on the real hardware.
-#
-# wifi_fix.py writes a modprobe option and a systemd recovery service; neither
-# needs any hardware to be present at build time.
-if [ "${GNUCHANOS_SKIP_HARDWARE_FIXES:-0}" != "1" ] && [ -d "$SRC/VOSTRO_A860" ]; then
+# These are not generic desktop defaults. gpu_fix.py disables Chromium GPU
+# acceleration to avoid a measured hang on Intel GM965; putting that flag in
+# every image forces WebGL games onto SwiftShader and the CPU. The settings
+# updater exposes these only through its explicit --hardware-fixes option.
+if [ "${GNUCHANOS_APPLY_VOSTRO_A860_FIXES:-0}" = "1" ] &&
+   [ "${GNUCHANOS_SKIP_HARDWARE_FIXES:-0}" != "1" ] &&
+   [ -d "$SRC/VOSTRO_A860" ]; then
     run_as_root "$SRC/VOSTRO_A860/gpu_fix.py"
     run_as_root "$SRC/VOSTRO_A860/wifi_fix.py"
-elif [ "${GNUCHANOS_SKIP_HARDWARE_FIXES:-0}" = "1" ]; then
-    log "Vostro A860 hardware fixes skipped"
+elif [ "${GNUCHANOS_APPLY_VOSTRO_A860_FIXES:-0}" = "1" ] &&
+     [ "${GNUCHANOS_SKIP_HARDWARE_FIXES:-0}" != "1" ]; then
+    log "Vostro A860 hardware fixes requested, but the scripts are not staged"
 else
-    log "no $SRC/VOSTRO_A860; the hardware fixes are not in this tree"
+    log "Vostro A860 hardware fixes are opt-in and were not applied"
 fi
 
 # --- the desktop wallpaper ---------------------------------------------------

@@ -18,17 +18,16 @@
 nul
 todo.md
 # ...but the icon theme's plan is part of the theme, not a scratch note.
+# (dotfile/ICON_THEME/TODO.md is tracked when it exists; negation kept for
+#  historical compatibility but the file need not be present.)
 !dotfile/ICON_THEME/TODO.md
 _temp/
 language/tests/*
 
 !language/tests/
-# Build output. Every makefile.py in this repository writes its product under
-# _temp/ (already ignored above), so nothing here should ever be produced in the
-# tree again. The entries below are the OLD output locations plus the generated
-# sources that used to be written into language/_SRC/: they are listed so that a
-# tree which still has them - or a stale build run - cannot dirty the working
-# directory and block `git pull` with "merge first".
+# The entries below are legacy paths from before GCL and the programs moved to
+# their own repositories. They are kept as no-ops so a stale checkout that still
+# has these directories cannot dirty the working tree.
 language/build/
 language/_SRC/embed_freemono.c
 language/_SRC/embed_icon.c

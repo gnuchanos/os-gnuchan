@@ -2387,3 +2387,183 @@ filechooser treeview.view {
 filechooser treeview.view {
   background-color: @gnuchan_bg_darkest;
 }
+
+/* ----------------------------------------------------------------------------
+ * 21. GIMP compatibility
+ * ----------------------------------------------------------------------------
+ * GIMP (2.99+/3.x, GTK 3) uses custom widgets and style classes that do not
+ * always inherit the palette the way ordinary GTK widgets do. These rules keep
+ * docks, tool options, spin scales, rulers and the image canvas surround
+ * consistent with the rest of the theme so controls remain readable.
+ * -------------------------------------------------------------------------- */
+
+GimpDock,
+GimpDock box,
+GimpDock grid,
+GimpDock paned,
+GimpDock stack,
+GimpDock notebook,
+GimpDock notebook > stack,
+GimpToolPalette,
+GimpToolPalette > viewport,
+GimpToolPalette scrolledwindow,
+GimpPrefsBox,
+GimpImageParasiteView,
+GimpDeviceStatus,
+GimpDashboard {
+  background-color: @gnuchan_bg;
+  color: @gnuchan_fg;
+}
+
+GimpDock .view,
+GimpDock textview,
+GimpDock textview text,
+GimpDock treeview,
+GimpDock iconview,
+GimpDock list {
+  background-color: @gnuchan_bg_darkest;
+  color: @gnuchan_fg;
+}
+
+GimpDock notebook > header,
+GimpDock notebook > header > tabs,
+GimpDock notebook > header > tabs > tab {
+  background-color: @gnuchan_bg;
+  color: @gnuchan_fg_dim;
+  border-color: @gnuchan_border;
+}
+
+GimpDock notebook > header > tabs > tab:checked {
+  background-color: @gnuchan_raised;
+  color: @gnuchan_fg_bright;
+  border-bottom: 2px solid @gnuchan_accent;
+}
+
+GimpDock notebook > header > tabs > tab:hover {
+  background-color: @gnuchan_hover;
+  color: @gnuchan_fg_bright;
+}
+
+/* Tool option spin scales and numeric entries are a frequent source of
+ * unreadable text in custom dark themes. */
+GimpSpinScale,
+GimpSpinScale entry,
+GimpSpinScale spinbutton,
+GimpSpinScale spinbutton entry,
+spinbutton.horizontal entry {
+  background-color: @gnuchan_bg_darkest;
+  color: @gnuchan_fg;
+  caret-color: @gnuchan_accent_pale;
+}
+
+GimpSpinScale:focus,
+GimpSpinScale:focus-within,
+GimpSpinScale entry:focus {
+  border-color: @gnuchan_accent;
+  box-shadow: 0 0 0 2px @gnuchan_selection_soft;
+}
+
+GimpSpinScale progress,
+GimpSpinScale trough,
+GimpSpinScale highlight {
+  min-height: 24px;
+}
+
+GimpSpinScale trough {
+  background-color: @gnuchan_surface_alt;
+  border: 1px solid @gnuchan_border;
+}
+
+GimpSpinScale progress,
+GimpSpinScale highlight {
+  background-color: @gnuchan_selected_bg_alt;
+}
+
+GimpDock button,
+GimpDock spinbutton > button {
+  background-color: @gnuchan_raised;
+  color: @gnuchan_fg;
+  border-color: @gnuchan_border;
+}
+
+GimpDock button:hover,
+GimpDock spinbutton > button:hover {
+  background-color: @gnuchan_raised_hover;
+  color: @gnuchan_fg_bright;
+}
+
+GimpDock button:checked,
+GimpDock button:active {
+  background-color: @gnuchan_selected_bg;
+  color: @gnuchan_white;
+  border-color: @gnuchan_accent;
+}
+
+GimpDock button.flat {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+GimpDock button.flat:hover {
+  background-color: @gnuchan_hover;
+  border-color: transparent;
+}
+
+GimpDock label,
+GimpDock checkbutton label,
+GimpDock radiobutton label {
+  color: @gnuchan_fg;
+}
+
+GimpDock label:disabled,
+GimpDock checkbutton:disabled label,
+GimpDock radiobutton:disabled label {
+  color: @gnuchan_fg_disabled;
+}
+
+GimpDock separator {
+  background-color: @gnuchan_border;
+  min-height: 1px;
+  min-width: 1px;
+}
+
+/* Canvas surround and rulers around the image display. */
+GimpDisplayShell,
+GimpDisplayShell grid,
+GimpDisplayShell box {
+  background-color: @gnuchan_bg;
+  color: @gnuchan_fg;
+}
+
+GimpRuler {
+  background-color: @gnuchan_surface;
+  color: @gnuchan_fg_dim;
+  border-color: @gnuchan_border;
+}
+
+GimpOverlayFrame,
+GimpColorFrame,
+GimpColorArea {
+  background-color: @gnuchan_surface_alt;
+  color: @gnuchan_fg;
+  border-color: @gnuchan_border;
+}
+
+GimpColorNotebook notebook > stack {
+  background-color: @gnuchan_surface_alt;
+}
+
+GimpDock frame,
+GimpDock frame > border {
+  border-color: @gnuchan_border;
+  color: @gnuchan_fg;
+}
+
+GimpDock expander {
+  color: @gnuchan_fg_dim;
+}
+
+GimpDock expander:hover,
+GimpDock expander:checked {
+  color: @gnuchan_accent_light;
+}

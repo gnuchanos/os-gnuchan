@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+if ! command -v apt >/dev/null 2>&1 || ! command -v notify-send >/dev/null 2>&1; then
+    printf '%s\n' "gnuchanos-update-notifier: apt or notify-send is unavailable" >&2
+    exit 1
+fi
+
+apt_output=$(apt list --upgradable 2>/dev/null) || {
+    printf '%s\n' "gnuchanos-update-notifier: apt could not read update status" >&2
+    exit 1
+}
+updates=$(printf '%s\n' "$apt_output" | awk 'NR > 1 && NF')
+state_home=${XDG_STATE_HOME:-"$HOME/.local/state"}
+state_dir="$state_home/GnuChanSoftwareCenter"
+state_file="$state_dir/apt-update-notification.sha256"
+mkdir -p "$state_dir"
+
+if [ -z "$updates" ]; then
+    printf '%s\n' none > "$state_file"
+    exit 0
+fi
+
+signature=$(printf '%s\n' "$updates" | sha256sum | awk '{print $1}')
+previous=$(cat "$state_file" 2>/dev/null || true)
+if [ "$signature" = "$previous" ]; then
+    exit 0
+fi
+
+count=$(printf '%s\n' "$updates" | awk 'END { print NR }')
+notify-send --app-name=GnuchanOS --icon=system-software-update-available \
+    --urgency=normal "Debian updates available" \
+    "$count package(s) can be updated. Open GnuChanSoftwareCenter to review them."
+
+temporary=$(mktemp "$state_dir/.apt-update-notification.XXXXXX")
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+printf '%s\n' "$signature" > "$temporary"
+mv -f "$temporary" "$state_file"

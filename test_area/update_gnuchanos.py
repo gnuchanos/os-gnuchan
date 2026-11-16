@@ -381,6 +381,7 @@ def apply_iso_dotfiles(user: Account, hardware_fixes: bool) -> None:
     environment.update({
         "GNUCHANOS_STAGE": str(OS_ROOT),
         "GNUCHANOS_LIVE_USER": user.name,
+        "GNUCHANOS_APPLY_VOSTRO_A860_FIXES": "1" if hardware_fixes else "0",
         "GNUCHANOS_SKIP_HARDWARE_FIXES": "0" if hardware_fixes else "1",
     })
     log(f"applying ISO theme and desktop files for {user.name}")

@@ -1,0 +1,8 @@
+[Unit]
+Description=Notify about available Debian updates
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gnuchanos-update-notifier
+NoNewPrivileges=yes
+ProtectSystem=full

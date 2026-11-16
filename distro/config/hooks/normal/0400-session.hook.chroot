@@ -95,3 +95,30 @@ rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
 rm -f "$LIVE_HOME/.bash_profile" "$LIVE_HOME/.xinitrc"
 
 log "done"
+
+# --- 5. xdg-desktop-portal autostart — kills GTK startup timeout ----------
+#
+# Without a running xdg-desktop-portal, GTK looks up org.gnome.SessionManager
+# and org.freedesktop.portal.Desktop on the session bus every time any GTK
+# application starts, waits for them, hits the D-Bus timeout (~30 seconds),
+# and only then shows its window. The fix is to start xdg-desktop-portal and
+# xdg-desktop-portal-gtk at session start so they are already up when the
+# first GTK app needs them. Written to /etc/xdg/autostart so it applies to
+# every user including the live user and the installed account.
+if [ -x /usr/libexec/xdg-desktop-portal ] &&
+   [ -x /usr/libexec/xdg-desktop-portal-gtk ]; then
+    install -d /etc/xdg/autostart
+    cat > /etc/xdg/autostart/xdg-portal.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=XDG Desktop Portal
+Comment=Start the XDG desktop portal and GTK backend at login
+Exec=sh -c '/usr/libexec/xdg-desktop-portal & sleep 1 && /usr/libexec/xdg-desktop-portal-gtk &'
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+    chmod 0644 /etc/xdg/autostart/xdg-portal.desktop
+    log "added /etc/xdg/autostart/xdg-portal.desktop (prevents 30s GTK startup delay)"
+else
+    log "xdg-desktop-portal not found; skipping autostart entry"
+fi

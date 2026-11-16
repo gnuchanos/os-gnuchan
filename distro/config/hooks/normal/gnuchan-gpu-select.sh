@@ -31,6 +31,38 @@ selected_driver() {
     printf '\n'
 }
 
+auto_detect_driver() {
+    first=
+    boot=
+    for device in "$(root_path /sys/bus/pci/devices)"/*; do
+        [ -f "$device/vendor" ] || continue
+        vendor=$(cat "$device/vendor" 2>/dev/null || :)
+        pci_class=$(cat "$device/class" 2>/dev/null || :)
+        case "$vendor" in
+            0x10de) detected=nvidia ;;
+            0x1002) detected=amd ;;
+            0x8086) detected=intel ;;
+            *) continue ;;
+        esac
+        case "$pci_class" in
+            0x03*) ;;
+            *) continue ;;
+        esac
+
+        [ -n "$first" ] || first=$detected
+        boot_vga=$(cat "$device/boot_vga" 2>/dev/null || :)
+        if [ "$boot_vga" = 1 ]; then
+            boot=$detected
+            break
+        fi
+    done
+    if [ -n "$boot" ]; then
+        printf '%s\n' "$boot"
+    else
+        printf '%s\n' "$first"
+    fi
+}
+
 load_module() {
     module=$1
     log "loading kernel module $module"
@@ -55,13 +87,43 @@ has_nvidia_device_bound() {
     return 1
 }
 
+has_amd_device_bound() {
+    expected_driver=$1
+    for device in "$(root_path /sys/bus/pci/devices)"/*; do
+        [ -f "$device/vendor" ] || continue
+        vendor=$(cat "$device/vendor" 2>/dev/null || :)
+        pci_class=$(cat "$device/class" 2>/dev/null || :)
+        [ "$vendor" = "0x1002" ] || continue
+        case "$pci_class" in
+            0x03*) ;;
+            *) continue ;;
+        esac
+        driver=$(readlink "$device/driver" 2>/dev/null || :)
+        case "$driver" in
+            */"$expected_driver") return 0 ;;
+        esac
+    done
+    return 1
+}
+
 restore_open_driver() {
     log "trying to restore the kernel's open NVIDIA driver"
     if modprobe nouveau; then
         log "nouveau loaded as a fallback"
+        return 0
     else
         log "ERROR: nouveau could not be loaded as a fallback"
+        return 1
     fi
+}
+
+fallback_to_nouveau() {
+    reason=$1
+    if restore_open_driver; then
+        log "continuing with nouveau: $reason"
+        return 0
+    fi
+    fail "$reason; nouveau fallback also failed"
 }
 
 install_from_pool() {
@@ -98,32 +160,40 @@ bring_up_nvidia() {
     if ! install_from_pool "$family"; then
         log "the ISO pool did not install the driver; trying repositories"
         if ! install_from_apt "$package"; then
-            restore_open_driver
-            fail "$package installation failed; no proprietary driver was activated"
+            fallback_to_nouveau "$package installation failed; no proprietary driver was activated"
+            return 0
         fi
     fi
 
+    # Install the NVIDIA Vulkan ICD so Vulkan-based apps (DXVK, games) use the
+    # GPU instead of falling back to lavapipe / software rendering.
+    # Failure here is non-fatal: the driver works without it, only Vulkan is missing.
+    log "installing nvidia-vulkan-icd for Vulkan support"
+    DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y --no-install-recommends nvidia-vulkan-icd 2>/dev/null \
+        || log "WARNING: nvidia-vulkan-icd could not be installed; Vulkan will fall back to software rendering"
+
     log "refreshing kernel module dependencies"
     if command -v depmod >/dev/null 2>&1 && ! depmod -a; then
-        restore_open_driver
-        fail "depmod failed; the selected driver cannot be loaded"
+        fallback_to_nouveau "depmod failed; the selected driver cannot be loaded"
+        return 0
     fi
 
     if [ -d "$(root_path /sys/module/nouveau)" ]; then
         log "nouveau is already loaded; unloading it before binding NVIDIA"
         if ! modprobe -r nouveau; then
-            restore_open_driver
-            fail "nouveau is still active; NVIDIA was not loaded"
+            fallback_to_nouveau "nouveau is still active; NVIDIA was not loaded"
+            return 0
         fi
     fi
 
     if ! load_module nvidia; then
-        restore_open_driver
-        fail "the selected package is present but its nvidia module did not load"
+        fallback_to_nouveau "the selected package is present but its nvidia module did not load"
+        return 0
     fi
     if ! has_nvidia_device_bound; then
-        restore_open_driver
-        fail "the nvidia module loaded but is not bound to an NVIDIA PCI device"
+        fallback_to_nouveau "the nvidia module loaded but is not bound to an NVIDIA PCI device"
+        return 0
     fi
 
     modprobe_dir=$(root_path /etc/modprobe.d)
@@ -138,22 +208,88 @@ bring_up_nvidia() {
     log "a reboot is required to make the package and selection permanent"
 }
 
+bring_up_legacy_nvidia() {
+    if ! command -v nvidia-detect >/dev/null 2>&1; then
+        log "installing nvidia-detect to identify the card's supported driver"
+        if ! install_from_pool nvidia-detect; then
+            if ! install_from_apt nvidia-detect; then
+                fallback_to_nouveau "could not install nvidia-detect for the selected NVIDIA card"
+                return 0
+            fi
+        fi
+    fi
+
+    if ! command -v nvidia-detect >/dev/null 2>&1; then
+        fallback_to_nouveau "nvidia-detect is still unavailable"
+        return 0
+    fi
+    recommendation=$(nvidia-detect 2>&1 || :)
+    package=
+    for candidate in nvidia-driver nvidia-tesla-535-driver \
+                     nvidia-legacy-470xx-driver \
+                     nvidia-legacy-390xx-driver nvidia-legacy-340xx-driver; do
+        case "$recommendation" in
+            *"$candidate"*) package=$candidate; break ;;
+        esac
+    done
+    if [ -z "$package" ]; then
+        fallback_to_nouveau "nvidia-detect found no installable branch: $recommendation"
+        return 0
+    fi
+
+    case "$package" in
+        nvidia-driver) family=nvidia ;;
+        *) family=$package ;;
+    esac
+    bring_up_nvidia "$family" "$package"
+}
+
 case "$(selected_driver)" in
     nvidia-new)
         bring_up_nvidia nvidia nvidia-driver
         ;;
     nvidia-legacy)
-        bring_up_nvidia nvidia-legacy nvidia-legacy-470xx-driver
+        bring_up_legacy_nvidia
         ;;
     amd)
-        load_module amdgpu || fail "could not load the requested AMD module"
+        if load_module amdgpu && has_amd_device_bound amdgpu; then
+            :
+        elif load_module radeon && has_amd_device_bound radeon; then
+            :
+        else
+            fail "neither amdgpu nor radeon bound to an AMD display device"
+        fi
         ;;
     intel)
         load_module i915 || load_module xe ||
             fail "could not load either supported Intel module"
         ;;
     "")
-        log "no explicit driver selected; keeping the kernel's default"
+        detected=$(auto_detect_driver)
+        case "$detected" in
+            nvidia)
+                log "no explicit driver selected; auto-detected an NVIDIA GPU"
+                bring_up_legacy_nvidia
+                ;;
+            amd)
+                log "no explicit driver selected; auto-detected an AMD GPU"
+                if load_module amdgpu && has_amd_device_bound amdgpu; then
+                    :
+                elif load_module radeon && has_amd_device_bound radeon; then
+                    :
+                else
+                    fail "neither amdgpu nor radeon bound to an AMD display device"
+                fi
+                ;;
+            intel)
+                log "no explicit driver selected; auto-detected an Intel GPU"
+                load_module i915 || load_module xe ||
+                    fail "could not load either supported Intel module"
+                ;;
+            *)
+                log "no explicit driver selected; keeping the kernel's default"
+                ;;
+        esac
         ;;
     *)
         fail "unknown gnuchan.gpu selection '$(selected_driver)'"

@@ -1609,3 +1609,98 @@ expander:checked {
 @define-color theme_unfocused_selected_bg_color      @gnuchan_selected_bg;
 @define-color theme_unfocused_selected_fg_color      @gnuchan_fg_bright;
 @define-color unfocused_borders                      @gnuchan_border_alt;
+
+/* ----------------------------------------------------------------------------
+ * 6. GIMP compatibility
+ * ----------------------------------------------------------------------------
+ * GIMP 3 (GTK 4/libadwaita path where applicable) uses custom widgets whose
+ * styling can diverge from standard widgets. Keep docks, rulers, spin scales
+ * and the canvas surround aligned with the theme palette.
+ * -------------------------------------------------------------------------- */
+
+GimpDock,
+GimpDock box,
+GimpDock grid,
+GimpDock paned,
+GimpDock stack,
+GimpDock notebook,
+GimpDock notebook > stack,
+GimpToolPalette,
+GimpToolPalette > viewport,
+GimpToolPalette scrolledwindow,
+GimpPrefsBox,
+GimpDashboard {
+  background-color: @gnuchan_bg;
+  color: @gnuchan_fg;
+}
+
+GimpDock .view,
+GimpDock textview,
+GimpDock textview > text,
+GimpDock treeview,
+GimpDock iconview,
+GimpDock list,
+GimpDock listview,
+GimpDock columnview {
+  background-color: @gnuchan_bg_darkest;
+  color: @gnuchan_fg;
+}
+
+GimpDock notebook > header,
+GimpDock tabbar,
+GimpDock tabbox > box {
+  background-color: @gnuchan_bg;
+  border-color: @gnuchan_border;
+}
+
+GimpDock notebook > header > tabs > tab:checked,
+GimpDock tabbar tab:checked {
+  background-color: @gnuchan_raised;
+  color: @gnuchan_fg_bright;
+  box-shadow: inset 0 -2px 0 0 @gnuchan_accent;
+}
+
+GimpSpinScale,
+GimpSpinScale > text,
+GimpSpinScale entry,
+spinbutton > text {
+  background-color: @gnuchan_bg_darkest;
+  color: @gnuchan_fg;
+  caret-color: @gnuchan_accent_pale;
+}
+
+GimpSpinScale:focus-within,
+GimpSpinScale > text:focus {
+  border-color: @gnuchan_accent;
+  box-shadow: 0 0 0 2px @gnuchan_selection_soft;
+}
+
+GimpSpinScale > trough {
+  background-color: @gnuchan_surface_alt;
+  border: 1px solid @gnuchan_border;
+}
+
+GimpSpinScale > trough > slider,
+GimpSpinScale progress {
+  background-color: @gnuchan_selected_bg_alt;
+}
+
+GimpDisplayShell,
+GimpDisplayShell grid,
+GimpDisplayShell box {
+  background-color: @gnuchan_bg;
+  color: @gnuchan_fg;
+}
+
+GimpRuler {
+  background-color: @gnuchan_surface;
+  color: @gnuchan_fg_dim;
+  border-color: @gnuchan_border;
+}
+
+GimpColorFrame,
+GimpColorArea {
+  background-color: @gnuchan_surface_alt;
+  color: @gnuchan_fg;
+  border-color: @gnuchan_border;
+}

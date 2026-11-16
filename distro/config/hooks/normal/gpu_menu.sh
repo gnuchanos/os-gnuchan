@@ -36,18 +36,15 @@ set -eu
 
 log() { printf '==> gpu-menu: %s\n' "$1"; }
 
-# The awk program does the whole edit in one pass. It reads the file, decides
-# from its own content whether it is an ISOLINUX menu (blocks opened by `label`)
-# or a GRUB one (blocks opened by `menuentry`), and clones the FIRST block once
-# per driver choice with the title and the kernel word swapped.
+# The live ISO keeps one normal menu entry and leaves the detection to the
+# runtime selector. The separate Intel/AMD/NVIDIA variants were a source of
+# user confusion and made the wrong vendor selection easy to hit.
+#
+# The build host runs a minimal environment, so keep this branch simple and
+# leave the existing first menu block untouched; the runtime code decides the
+# correct GPU family from the actual hardware when the system boots.
 GPU_MENU_AWK='
-BEGIN {
-    titles[1] = "Live System -> NVIDIA (new)";    params[1] = "gnuchan.gpu=nvidia-new modprobe.blacklist=nouveau"
-    titles[2] = "Live System -> NVIDIA (legacy)"; params[2] = "gnuchan.gpu=nvidia-legacy modprobe.blacklist=nouveau"
-    titles[3] = "Live System -> Radeon";          params[3] = "gnuchan.gpu=amd"
-    titles[4] = "Live System -> Intel";           params[4] = "gnuchan.gpu=intel"
-    choices = 4
-}
+BEGIN { }
 { lines[NR] = $0 }
 END {
     for (i = 1; i <= NR; i++) {
@@ -57,8 +54,7 @@ END {
     exit 0
 }
 
-# ISOLINUX: a block starts at a `label <name>` line and runs to the next one.
-function isolinux(   first, last, i, c, line, indent, body, m) {
+function isolinux(   first, last, i) {
     first = 0
     for (i = 1; i <= NR; i++) {
         if (lines[i] ~ /^[ \t]*label[ \t]+[^ \t]/) { first = i; break }
@@ -70,74 +66,22 @@ function isolinux(   first, last, i, c, line, indent, body, m) {
         if (lines[i] ~ /^[ \t]*label[ \t]+[^ \t]/) { last = i - 1; break }
     }
 
-    for (i = 1; i < first; i++) print lines[i]
-    for (i = first; i <= last; i++) print lines[i]
-
-    for (c = 1; c <= choices; c++) {
-        for (i = first; i <= last; i++) {
-            line = lines[i]
-
-            # `menu default` marks the ORIGINAL entry as the one Enter picks; a
-            # clone that carried it too would leave several defaults, which is
-            # an invalid menu. Dropped.
-            if (line ~ /^[ \t]*menu default[ \t]*$/) continue
-
-            if (line ~ /^[ \t]*label[ \t]+[^ \t]/) {
-                m = match(line, /^[ \t]*label[ \t]+[^ \t]+/)
-                line = substr(line, 1, m + RLENGTH - 1) "-gpu" c substr(line, m + RLENGTH)
-            } else if (line ~ /^[ \t]*menu label[ \t]/) {
-                indent = line; sub(/[^ \t].*$/, "", indent)
-                line = indent "menu label " titles[c]
-            } else if (line ~ /^[ \t]*append[ \t]/) {
-                indent = line; sub(/[^ \t].*$/, "", indent)
-                body = line
-                sub(/^[ \t]*append[ \t]+/, "", body)
-                sub(/[ \t\r]+$/, "", body)
-                line = indent "append " body " " params[c]
-            }
-            print line
-        }
-    }
-    for (i = last + 1; i <= NR; i++) print lines[i]
+    for (i = 1; i <= NR; i++) print lines[i]
 }
 
-# GRUB: a block is a `menuentry` and everything up to its closing brace. The
-# braces are counted because they nest; a menuentry that only added its own
-# opening brace would stop at the first inner `}`.
-function grub(   first, last, i, j, c, line, body, m, open, depth, probe) {
+function grub(   first, last, i) {
     first = 0
     for (i = 1; i <= NR; i++) {
         if (lines[i] ~ /^[ \t]*menuentry([ \t]|$)/) { first = i; break }
     }
     if (first == 0) { for (i = 1; i <= NR; i++) print lines[i]; return }
 
-    depth = 0; open = 0; last = first
-    for (j = first; j <= NR; j++) {
-        probe = lines[j]; depth += gsub(/\{/, "{", probe)
-        if (lines[j] ~ /\{/) open = 1
-        probe = lines[j]; depth -= gsub(/\}/, "}", probe)
-        last = j
-        if (open && depth <= 0) break
+    last = first
+    for (i = first + 1; i <= NR; i++) {
+        if (lines[i] ~ /^[ \t]*menuentry([ \t]|$)/) { break }
+        last = i
     }
-
-    for (i = 1; i <= last; i++) print lines[i]
-
-    for (c = 1; c <= choices; c++) {
-        for (i = first; i <= last; i++) {
-            line = lines[i]
-            if (line ~ /^[ \t]*menuentry([ \t]|$)/) {
-                m = match(line, /"[^"]*"/)
-                if (m > 0) {
-                    line = substr(line, 1, m - 1) "\"" titles[c] "\"" substr(line, m + RLENGTH)
-                }
-            } else if (line ~ /^[ \t]*(linux|linuxefi)[ \t]/) {
-                body = line; sub(/[ \t\r]+$/, "", body)
-                line = body " " params[c]
-            }
-            print line
-        }
-    }
-    for (i = last + 1; i <= NR; i++) print lines[i]
+    for (i = 1; i <= NR; i++) print lines[i]
 }
 '
 
@@ -176,9 +120,33 @@ find_isolinux() {
     return 1
 }
 
+disable_live_plymouth() {
+    file=$1
+    [ -f "$file" ] || return 0
+    temporary="$file.nosplash.tmp"
+    if awk '
+        {
+            if (($0 ~ /^[ \t]*linux(efi)?[ \t]/ ||
+                 $0 ~ /^[ \t]*append[ \t]/) &&
+                $0 ~ /boot=live/ &&
+                $0 !~ /(^|[ \t])nosplash([ \t]|$)/)
+                $0 = $0 " nosplash"
+            print
+        }
+    ' "$file" > "$temporary"; then
+        mv "$temporary" "$file"
+        log "disabled Plymouth on live boot entries in $file"
+    else
+        rm -f "$temporary"
+        log "ERROR: could not disable Plymouth in $file"
+        return 1
+    fi
+}
+
 root=${1:-.}
 
 if isolinux=$(find_isolinux "$root"); then
+    disable_live_plymouth "$isolinux"
     edit_menu "$isolinux"
 else
     log "no ISOLINUX configuration found; the BIOS menu is left as it is"
@@ -186,6 +154,7 @@ fi
 
 grub="$root/boot/grub/grub.cfg"
 if [ -f "$grub" ]; then
+    disable_live_plymouth "$grub"
     edit_menu "$grub"
 else
     log "no GRUB configuration found; the EFI menu is left as it is"

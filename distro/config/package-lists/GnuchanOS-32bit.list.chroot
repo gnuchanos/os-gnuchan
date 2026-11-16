@@ -9,10 +9,9 @@ systemd
 systemd-sysv
 dbus
 
-# --- the boot splash ---
-plymouth
-plymouth-themes
+# --- initramfs tooling; GnuChanPlymouth replaces Plymouth after boot ---
 initramfs-tools
+libdrm-dev
 zstd
 
 # --- GRUB for 32-bit ---

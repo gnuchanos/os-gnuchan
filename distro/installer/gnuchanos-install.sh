@@ -497,17 +497,24 @@ if [ -f "$LIVE_GRUB_DEFAULT" ]; then
     LIVE_GRUB_GFXMODE=$(sed -n 's/^GRUB_GFXMODE="\([^"]*\)"$/\1/p' "$LIVE_GRUB_DEFAULT")
 fi
 
+GPU_ARGS_HELPER="$(dirname "$0")/gnuchanos-gpu-kernel-args.sh"
+[ -r "$GPU_ARGS_HELPER" ] ||
+    die "the GPU boot-choice helper is missing: $GPU_ARGS_HELPER"
+. "$GPU_ARGS_HELPER"
+GRUB_KERNEL_ARGS=$(gnuchanos_gpu_grub_cmdline "$(cat /proc/cmdline)")
+note "installed GPU kernel arguments: $GRUB_KERNEL_ARGS"
+
 # The installed system's /etc/default/grub is written ALWAYS, not only
 # when absent: the live image's own copy is the ISO's - it names the live boot
 # parameters (boot=live, the live medium), and an installed machine booting
 # with `boot=live` looks for a squashfs that is not there and stops. What the
 # installed machine wants is a plain line with its own root, which the kernel
 # adds from the UUID below.
-cat > "$TARGET/etc/default/grub" <<'GRUBCFG'
+cat > "$TARGET/etc/default/grub" <<GRUBCFG
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=5
 GRUB_DISTRIBUTOR="GnuChanOS"
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_KERNEL_ARGS"
 GRUB_CMDLINE_LINUX=""
 GRUB_DISABLE_OS_PROBER=true
 GRUBCFG
@@ -566,6 +573,20 @@ if [ "$NEWUSER" != "gnuchanos" ] && [ -d "$TARGET/home/gnuchanos" ] && [ ! -e "$
     mv "$TARGET/home/gnuchanos" "$TARGET/home/$NEWUSER"
 fi
 
+# Fix absolute symlinks that still point to the old /home/gnuchanos path.
+# GCL's launcher (~/.local/bin/gcl) is one such symlink: it was created
+# during the live build as /home/gnuchanos/.local/bin/gcl -> /home/gnuchanos/
+# .local/lib/gnuchan/gcl/gcl, and moving the home directory above does not
+# rewrite the target. Any symlink whose target begins with /home/gnuchanos
+# is repointed to /home/$NEWUSER.
+if [ "$NEWUSER" != "gnuchanos" ]; then
+    find "$TARGET/home/$NEWUSER" -type l -lname "/home/gnuchanos/*" 2>/dev/null | while read -r link; do
+        target=$(readlink "$link")
+        new_target=$(printf '%s' "$target" | sed "s|/home/gnuchanos|/home/$NEWUSER|")
+        ln -sf "$new_target" "$link"
+    done
+fi
+
 chroot "$TARGET" useradd -m -s /bin/bash -c "$FULLNAME" "$NEWUSER"
 printf '%s:%s\n' "$NEWUSER" "$PASS1" | chroot "$TARGET" chpasswd
 
@@ -607,7 +628,14 @@ for WM_CONFIG in "$WM_CONFIG_DIR/GnuChanWM.conf" "$WM_CONFIG_DIR/GnuChanWM.py"; 
         sed -i '/^[[:space:]]*"gnuchanos-installer",[[:space:]]*$/d' "$WM_CONFIG"
     fi
 done
-rm -f "$TARGET/usr/local/bin/gnuchanos-installer"
+rm -f \
+    "$TARGET/usr/local/bin/gnuchanos-installer" \
+    "$TARGET/usr/local/bin/GnuChanInstall" \
+    "$TARGET/usr/local/sbin/gnuchanos-install" \
+    "$TARGET/usr/local/sbin/gnuchanos-gpu-kernel-args.sh" \
+    "$TARGET/usr/share/applications/gnuchanos-installer.desktop" \
+    "$TARGET/usr/share/pixmaps/gnuchanos/logo.png"
+note "removed the live-only installer from the installed system"
 
 # Give this installation its own SSH identity and make the daemon available
 # after reboot. The ISO intentionally contains no shared host keys.

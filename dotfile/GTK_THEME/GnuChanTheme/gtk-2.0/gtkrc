@@ -681,3 +681,67 @@ class "GtkColorSelection" style "gnuchan-selection-widget"
 class "GtkFontSelection"  style "gnuchan-selection-widget"
 widget_class "*<GtkColorSelection>*" style "gnuchan-selection-widget"
 widget_class "*<GtkFontSelection>*"  style "gnuchan-selection-widget"
+
+# --- GIMP 2.x (GTK 2) compatibility ------------------------------------------
+# GIMP 2.10 uses GTK 2 and custom widget names (GimpDock, GimpDisplayShell,
+# GimpSpinScale, GimpRuler, etc.). These rules keep tool options, docks and the
+# canvas surround readable with the GnuchanPurple palette.
+style "gnuchan-gimp"
+{
+  bg[NORMAL]        = "#0E0614"
+  bg[PRELIGHT]      = "#21102B"
+  bg[ACTIVE]        = "#1C0B27"
+  bg[SELECTED]      = "#542080"
+  bg[INSENSITIVE]   = "#0F0615"
+
+  fg[NORMAL]        = "#EAD7FF"
+  fg[PRELIGHT]      = "#F3E8FF"
+  fg[ACTIVE]        = "#FFFFFF"
+  fg[SELECTED]      = "#FFFFFF"
+  fg[INSENSITIVE]   = "#70458A"
+
+  base[NORMAL]      = "#09030D"
+  base[PRELIGHT]    = "#12071A"
+  base[ACTIVE]      = "#180A22"
+  base[SELECTED]    = "#542080"
+  base[INSENSITIVE] = "#0E0614"
+
+  text[NORMAL]      = "#EAD7FF"
+  text[PRELIGHT]    = "#FFFFFF"
+  text[ACTIVE]      = "#FFFFFF"
+  text[SELECTED]    = "#FFFFFF"
+  text[INSENSITIVE] = "#70458A"
+}
+widget_class "*Gimp*" style "gnuchan-gimp"
+widget_class "*GimpDock*" style "gnuchan-gimp"
+widget_class "*GimpDockable*" style "gnuchan-gimp"
+widget_class "*GimpDisplayShell*" style "gnuchan-gimp"
+widget_class "*GimpToolbox*" style "gnuchan-gimp"
+widget_class "*GimpPrefsBox*" style "gnuchan-gimp"
+
+style "gnuchan-gimp-spin"
+{
+  bg[NORMAL]      = "#180A22"
+  bg[PRELIGHT]    = "#21102B"
+  bg[ACTIVE]      = "#542080"
+  fg[NORMAL]      = "#EAD7FF"
+  fg[PRELIGHT]    = "#FFFFFF"
+  base[NORMAL]    = "#09030D"
+  base[SELECTED]  = "#542080"
+  text[NORMAL]    = "#EAD7FF"
+  text[SELECTED]  = "#FFFFFF"
+}
+widget_class "*GimpSpinScale*" style "gnuchan-gimp-spin"
+widget_class "*GimpSpinButton*" style "gnuchan-gimp-spin"
+widget_class "*GimpScaleEntry*" style "gnuchan-gimp-spin"
+
+style "gnuchan-gimp-ruler"
+{
+  bg[NORMAL] = "#12071A"
+  fg[NORMAL] = "#B78ED6"
+  base[NORMAL] = "#12071A"
+  text[NORMAL] = "#EAD7FF"
+}
+widget_class "*GimpRuler*" style "gnuchan-gimp-ruler"
+widget_class "*GimpColorArea*" style "gnuchan-gimp"
+widget_class "*GimpColorFrame*" style "gnuchan-gimp"

@@ -58,6 +58,8 @@ PIXMAP_DIR = Path("/usr/share/pixmaps/gnuchanos")
 
 ENGINE_SOURCE = PACKAGE / "gnuchanos-install.sh"
 ENGINE_TARGET = SBIN_DIR / "gnuchanos-install"
+GPU_ARGS_SOURCE = PACKAGE / "gnuchanos-gpu-kernel-args.sh"
+GPU_ARGS_TARGET = SBIN_DIR / "gnuchanos-gpu-kernel-args.sh"
 LAUNCHER = BIN_DIR / "gnuchanos-installer"
 
 SOURCES = (
@@ -197,6 +199,8 @@ def check_sources() -> None:
         raise SystemExit("error: missing source files: " + ", ".join(missing))
     if not ENGINE_SOURCE.is_file():
         raise SystemExit(f"error: missing the install engine {ENGINE_SOURCE}")
+    if not GPU_ARGS_SOURCE.is_file():
+        raise SystemExit(f"error: missing the GPU argument helper {GPU_ARGS_SOURCE}")
 
 
 def build() -> Path:
@@ -294,6 +298,12 @@ def install(binary: Path) -> None:
     os.replace(str(engine_staged), str(ENGINE_TARGET))
     detail(f"installed {ENGINE_TARGET}")
 
+    gpu_args_staged = SBIN_DIR / (GPU_ARGS_TARGET.name + ".new")
+    shutil.copyfile(GPU_ARGS_SOURCE, gpu_args_staged)
+    gpu_args_staged.chmod(0o755)
+    os.replace(str(gpu_args_staged), str(GPU_ARGS_TARGET))
+    detail(f"installed {GPU_ARGS_TARGET}")
+
     # the launcher, and the two desktop entries that call it
     write_atomically(LAUNCHER, launcher_text(), 0o755)
     detail(f"installed {LAUNCHER}")
@@ -306,7 +316,7 @@ def install(binary: Path) -> None:
 
 def uninstall() -> None:
     step("Uninstalling")
-    for target in (BIN_DIR / PROGRAM, ENGINE_TARGET, LAUNCHER,
+    for target in (BIN_DIR / PROGRAM, ENGINE_TARGET, GPU_ARGS_TARGET, LAUNCHER,
                    APPS_DIR / "gnuchanos-installer.desktop",
                    XDG_DIR / "gnuchanos-installer.desktop"):
         if target.exists():

@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # =============================================================================
 # gpu_fix.py - Dell Vostro A860 (Intel GM965 / GMA X3100) icin grafik duzeltmesi.
-# Tek dosya, yalnizca standart kutuphane. Bir kez calistirilir; gerisi kendi.
+# Yalnizca hedef makinede calisir; baska donanimda degisiklik yapmaz.
 #
 #     sudo python3 gpu_fix.py            # her seyi kur (asagidaki iki is)
 #     python3 gpu_fix.py --status        # simdi ne kosuyor, hicbir sey yazmaz
+#     sudo python3 gpu_fix.py --enable-chromium-gpu
+#                                           # Chromium'daki CPU yazilimini kaldir
 #     sudo python3 gpu_fix.py --revert   # kurdugu her seyi geri al
 #     python3 gpu_fix.py --probe         # adaylari dene, hicbir sey yazma
 #
 # =============================================================================
 # NE YAPAR
 # =============================================================================
-# Iki isi birlikte yapar, cunku ikisi ayri cozum degil tek bir dengedir:
+# Yalnizca hedef donanimda iki isi birlikte yapar, cunku ikisi ayri cozum
+# degil tek bir dengedir:
 #
 #   1. GL'yi donanima dondurur (crocus). Oyunlar hizli kosar. Bunu
 #      /etc/X11/xorg.conf.d/99-gnuchan-glamor.conf yazarak yapar.
@@ -546,6 +549,24 @@ def report(log: Log, facts: Facts) -> None:
         log.note("GL yolu Xorg log'undan okunamadi; `--probe` ile deneyin.")
 
 
+def is_vostro_a860(facts: Facts) -> bool:
+    """Apply this risky Chromium workaround only to its measured target laptop."""
+    try:
+        vendor = Path("/sys/class/dmi/id/sys_vendor").read_text(
+            encoding="utf-8", errors="replace"
+        ).strip().lower()
+        product = Path("/sys/class/dmi/id/product_name").read_text(
+            encoding="utf-8", errors="replace"
+        ).strip().lower()
+    except OSError:
+        return False
+    return (
+        "dell" in vendor
+        and "vostro a860" in product
+        and "intel" in facts.gpu_name.lower()
+    )
+
+
 def report_hangs(log: Log) -> None:
     """Journal'da GPU takilmasi var mi. Yalnizca bilgi."""
     if which("journalctl") is None:
@@ -605,8 +626,13 @@ def write_chromium_flags(log: Log) -> None:
 
 
 def install(log: Log) -> int:
-    """Hizlandirmayi dogrula, kur; chromium'u GPU'dan cikar. 0 = basarili."""
+    """Target laptop only: verify acceleration, then avoid its Chromium hang."""
     facts = Facts()
+    if not is_vostro_a860(facts):
+        log.step("Vostro A860 duzeltmesi")
+        log.detail(f"bu makine hedef degil: {facts.gpu_name}")
+        log.note("Hicbir sistem dosyasi degistirilmedi.")
+        return 0
 
     xorg = find_xorg()
     if xorg is None:
@@ -747,6 +773,26 @@ def revert(log: Log) -> int:
     return 0
 
 
+def enable_chromium_gpu(log: Log) -> int:
+    """Remove only this script's Chromium flags, leaving Xorg config untouched."""
+    if not CHROMIUM_FLAGS_PATH.exists():
+        log.detail(f"{CHROMIUM_FLAGS_PATH} zaten yok")
+        return 0
+    if not is_ours(CHROMIUM_FLAGS_PATH):
+        log.warn(
+            f"{CHROMIUM_FLAGS_PATH} bu script yazmadi; dosyaya dokunulmadi"
+        )
+        return 1
+    try:
+        CHROMIUM_FLAGS_PATH.unlink()
+    except OSError as error:
+        log.warn(f"{CHROMIUM_FLAGS_PATH} silinemedi: {error}")
+        return 1
+    log.detail(f"silindi: {CHROMIUM_FLAGS_PATH}")
+    log.note("Chromium GPU hizlandirmasi yeniden etkin; tarayiciyi yeniden baslatin.")
+    return 0
+
+
 # --- giris --------------------------------------------------------------------
 
 
@@ -754,12 +800,14 @@ def usage() -> None:
     print(
         "kullanim: python3 gpu_fix.py            (sudo ile) her seyi kur\n"
         "         python3 gpu_fix.py --status    durumu yaz, hicbir sey degistirme\n"
+        "         python3 gpu_fix.py --enable-chromium-gpu\n"
+        "                                             Chromium GPU kapatmasini kaldir\n"
         "         python3 gpu_fix.py --revert    eski hale don\n"
         "         python3 gpu_fix.py --probe     adaylari dene, hicbir sey yazma\n"
         "\n"
-        "Varsayilan calistirma iki isi birlikte yapar:\n"
-        "  1. GL'yi donanima dondurur (crocus) -> oyunlar hizli.\n"
-        "  2. Chromium'u GPU'dan uzak tutar    -> tarayici oturumu dusurmez.\n"
+        "Varsayilan calistirma yalnizca Dell Vostro A860 / Intel GPU'da etkilidir:\n"
+        "  1. GL'yi donanima dondurur (crocus).\n"
+        "  2. Chromium GPU kapatmasini yazar (GM965 takilmasini onlemek icin).\n"
     )
 
 
@@ -776,6 +824,10 @@ def main() -> int:
         report(log, facts)
         report_hangs(log)
         return 0
+
+    if "--enable-chromium-gpu" in arguments:
+        ensure_root(log)
+        return enable_chromium_gpu(log)
 
     if "--probe" in arguments:
         ensure_root(log)

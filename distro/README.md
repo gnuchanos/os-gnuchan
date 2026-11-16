@@ -21,6 +21,7 @@ Nothing here installs onto the machine that builds it. The image is produced in
 `distro/_build/` (ignored by git) and the live-build working tree never touches
 the source tree.
 
+
 ## What it is made with
 
   * **live-build** — Debian's own tool for building a live image. It turns a
@@ -65,10 +66,12 @@ the source tree.
     `/usr/share/gnuchanos/book`.
 
   * **The dotfiles** — the GRUB theme, the Plymouth theme, the GTK theme, the
-    icon and cursor themes, the fonts, and the per-machine fixes under
-    `dotfile/`. The boot themes are the machine's and are installed as root;
-    the themes a session loads are installed into the live user's home, which
-    is why the live user is created first.
+    icon and cursor themes, the fonts, and opt-in per-machine fixes under
+    `dotfile/`. The Vostro A860 workaround disables Chromium GPU acceleration
+    to avoid a measured Intel GM965 hang, so it is never applied to a generic
+    image or a different machine. The boot themes are installed as root; the
+    themes a session loads are installed into the live user's home, which is
+    why the live user is created first.
 
   * **The session** — the desktop's own display manager, **GnuChanDM**, owns the
     console: it greets, authenticates the live user and starts **GnuChanWM** as
@@ -78,9 +81,15 @@ the source tree.
     screen both authenticate through PAM, so `/etc/pam.d/gnuchandm` and
     `/etc/pam.d/gnuchansl` are written by the session hook.
 
-  * **Middle-button scrolling** — XLibre's libinput driver is configured so
-    pressing and moving a physical mouse's middle button scrolls by default.
-    Touchpads keep their existing two-finger scrolling behavior.
+  * **Middle-button scrolling** — removed. The middle mouse button is
+    passed through to applications (Blender viewport rotation, browser
+    auto-scroll, etc.) without WM or X server interception.
+
+  * **Graphics selection** — a boot-time service detects the primary PCI
+    display device rather than relying on a CPU-vendor guess or a manual GRUB
+    choice. Intel and AMD use their kernel drivers; NVIDIA uses Debian's
+    `nvidia-detect` recommendation. On hybrid systems, the primary display
+    device (`boot_vga`) wins over secondary render-only GPUs.
 
   * **Laptop lid** — systemd-logind ignores physical lid events, so closing or
     opening the lid does not trigger suspend or hibernate. GnuChanWM does not
@@ -301,8 +310,8 @@ be expressed as a package:
                              (See "Boot menu branding" below.)
     0100-xlibre              run dotfile/XLIBRE/Install_xlibre.py
     0200-dotfiles            run the theme and settings installers under dotfile/,
-                             the per-machine hardware fixes, and install the
-                             wallpaper
+                             install the wallpaper, and apply Vostro A860
+                             hardware fixes only when explicitly requested
     0300-gnuchan-programs    GnuChanPrograms.sh: the programs AND the GCL
                              language, each fetched from its own repository
     0360-zapret-config       force the zapret config settings the bypass needs
@@ -360,11 +369,24 @@ lock screen unable to open.
 The notification server and the dock are started by GnuChanWM from its own
 autostart list in `~/.config/GnuChanWM/GnuChanWM.py`.
 
+The systemd user timer `gnuchanos-update-notifier.timer` checks APT's local
+upgradable-package catalog after login and every three hours. It sends a
+desktop notification when the set of available Debian updates changes; it
+never installs updates. The check relies on Debian's normal APT index refresh,
+and the Software Center remains the place to review and apply updates.
+GnuChan program installs also record versioned repositories under
+`/usr/local/share/gnuchanos/versions/`, so the Software Center compares GitHub
+versions with the installed build rather than a user configuration file that
+may have been preserved across upgrades.
+
 On the live image, that same list starts `gnuchanos-installer` when GnuChanWM
 starts. The launcher uses the live user's passwordless sudo rule to open the
 installer as root without a password prompt; this does not skip GnuChanDM or
 log in the user automatically. The installer removes its autostart entry and
-the live-only sudo rule from the installed system.
+the live-only sudo rule from the installed system. Its launcher, window,
+install scripts, desktop entries and installer icon are also removed from the
+installed system; they remain on the live image so it can still install
+GnuchanOS.
 
 ## Boot menu branding
 

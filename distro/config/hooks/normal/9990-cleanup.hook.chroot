@@ -35,13 +35,13 @@ fi
 # --- keep the NVIDIA driver installer ----------------------------------------
 
 # The NVIDIA proprietary driver cannot be installed at build time and must not
-# be: its version depends on the card (Pascal and newer take the current driver,
-# Kepler takes nvidia-legacy-470xx, Fermi and older take 390xx) and the versions
-# exclude one another, so the right one can only be chosen on the real machine.
-# The installer that makes that choice is kept here, next to the book, so it is
-# on the finished image for the user to run once - the same reason the book is
-# kept: it is something a live session may need and the source tree is the only
-# place it exists.
+# be: its version depends on the PCI card, and the versions exclude one another.
+# The live selector and installed-system helper use Debian's nvidia-detect to
+# choose among nvidia-driver, Debian's Tesla branch, and available
+# 470xx/390xx/340xx legacy branches.
+# These packages are staged in the ISO pool but never installed into the base
+# image. The separate post-install NVIDIA utility is kept for users who choose
+# to install or revert the driver after installation.
 #
 # The live image itself comes up on nouveau (open source) with the firmware in
 # the package list, so every NVIDIA card boots; this installer is the opt-in step
@@ -81,6 +81,12 @@ grep -Fq '"GnuChanScreenShoot"' \
     { log "ERROR: screenshot hotkey daemon is not in the live session autostart"; exit 1; }
 [ -x /usr/local/bin/GnuChanDM ] ||
     { log "ERROR: GnuChanDM is missing from the finished image"; exit 1; }
+[ -x /usr/local/bin/GnuChanPlymouth ] ||
+    { log "ERROR: GnuChanPlymouth is missing from the finished image"; exit 1; }
+[ -f /etc/gnuchan-plymouth/intel.conf ] &&
+[ -f /etc/gnuchan-plymouth/amd.conf ] &&
+[ -f /etc/gnuchan-plymouth/nvidia.conf ] ||
+    { log "ERROR: a GnuChanPlymouth GPU profile is missing"; exit 1; }
 [ -x /usr/local/bin/GnuChanDesktop ] ||
     { log "ERROR: GnuChanDesktop is missing from the finished image"; exit 1; }
 [ -x /usr/local/bin/GnuChanWelcome ] ||

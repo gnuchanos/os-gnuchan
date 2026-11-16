@@ -32,19 +32,19 @@
 #      gelir); ozel surucu, kullanicinin kendi makinesinde actigi bir adimdir.
 #
 # Ozel surucu kurulunca yalnizca o kart tam hiza cikmaz: script ayrica
-#   - NVIDIA'nin ZORUNLU cekirdek modu ayarini yazar (`nvidia_drm modeset=1`),
-#   - HIBRIT (Optimus) laptopta panelin hangi karta bagli oldugunu bilir ve
-#     `fbdev=1` ile konsolu canli tutar; boylece GPU'lu bir laptop da tam
-#     hizda acilir, yazilim render'a (llvmpipe) DUSMEZ.
+#   - NVIDIA'nin zorunlu cekirdek modu ayarini yazar (`nvidia_drm modeset=1`),
+#   - yalnizca HIBRIT (Optimus) laptopta panel iGPU'ya bagliysa konsolu canli
+#     tutmak icin `fbdev=1` ekler.
+#   - GnuChanDM bulunan kurulumlarda NVIDIA KMS'i Plymouth kapandiktan sonraya
+#     alir; surucunun acilis framebuffer'ini erken devralmasini onler.
 #
 # NE DEGISTIRIR
 #     apt)  nvidia-detect, ardindan onun onerdigi surucu paketi
 #           (nvidia-driver ya da nvidia-legacy-XXXX-driver) ve
 #           linux-headers-amd64 (DKMS cekirdek modulunu derleyebilsin diye)
 #     /etc/modprobe.d/gnuchan-nvidia.conf
-#           `options nvidia_drm modeset=1 fbdev=1` - KMS. NVIDIA 495 ve
-#           sonrasinda ZORUNLUDUR: yazilmazsa surucu yuklenir ama X/Wayland onu
-#           kullanamaz ve masaustu llvmpipe'a duser.
+#           `options nvidia_drm modeset=1` - KMS; NVIDIA 495 ve sonrasinda
+#           zorunludur. `fbdev=1` yalnizca hibrit makinede eklenir.
 #     nouveau otomatik blacklist edilir (surucu paketinin kendisi yapar)
 #
 # --revert ozel surucuyu ve bu scriptin yazdigi modprobe dosyasini kaldirir;
@@ -87,29 +87,25 @@ HEADERS_PACKAGE = "linux-headers-amd64"
 #: Bu scriptin yazdigi NVIDIA cekirdek-modu yapilandirmasi.
 MODPROBE_PATH = Path("/etc/modprobe.d/gnuchan-nvidia.conf")
 
-#: KMS ayari. `modeset=1` NVIDIA 495+ icin ZORUNLUDUR: olmadan surucu yuklenir
-#: ama X/Wayland kullanamaz ve masaustu yazilim render'a duser. `fbdev=1` ise
-#: karta bagli bir ekran olmadiginda bile calisan bir konsol/framebuffer birakir
-#: - HIBRIT bir laptopta normal durum budur (panel iGPU'da, NVIDIA arkada
-#: render eder). Ikisi birlikte hem tek-GPU hem Optimus makinede tam hizi verir.
+#: KMS ayari. `modeset=1` NVIDIA 495+ icin zorunludur. `fbdev=1` ise sadece
+#: hibrit makinede, panel iGPU'ya bagliyken NVIDIA framebuffer'ini konsol icin
+#: acmak gerektiginde eklenir.
 MODPROBE_TEXT = """\
 # GnuChanOS / GnuChanDM: NVIDIA cekirdek modu (KMS).
 #
 # Bu dosyayi install_nvidia.py yazar.
 #
-# `modeset=1` NVIDIA 495 ve sonrasinda ZORUNLUDUR: yazilmazsa surucu yuklenir
-# ama X/Wayland onu kullanamaz ve masaustu yazilim render'a (llvmpipe) duser.
+# `modeset=1` NVIDIA 495 ve sonrasinda zorunludur.
 #
-# `fbdev=1` karta bagli bir ekran olmadiginda da calisan bir framebuffer
-# birakir. HIBRIT bir laptopta normal durum budur: panel Intel/AMD iGPU'ya
-# baglidir, NVIDIA kart PRIME offloading icin arkada render eder. Bu olmadan
-# konsol ve erken acilis boyle bir makinede bos gelebilir.
-options nvidia_drm modeset=1 fbdev=1
+# `fbdev=1` yalnizca hibrit sistemlerde, panel iGPU'ya bagliyken konsolun
+# NVIDIA framebuffer'ini kullanmasi gerektiginde eklenir.
+options nvidia_drm modeset=1{fbdev}
 """
 
 #: Dosyayi bu scriptin yazdigini isaretler; `--revert` yalnizca kendi yazdigini
 #: silmek icin bunu arar ve bir kullanicinin kendi modprobe dosyasina dokunmaz.
 MODPROBE_MARKER = "install_nvidia.py"
+INTEL_MODESETTING_OVERRIDE = Path("/etc/X11/xorg.conf.d/99-gnuchan-glamor.conf")
 
 
 # --- cikti -------------------------------------------------------------------
@@ -263,12 +259,34 @@ class GpuState:
 
     @staticmethod
     def _proprietary_installed() -> bool:
-        """Ozel surucu kurulu mu. nvidia kernel modulunun varligina bakilir;
-        paket adi surume gore degistigi icin isim yerine modul aranir."""
+        """Detect an installed or active proprietary NVIDIA driver.
+
+        `modinfo` is not present on every live image and may be outside the
+        invoking user's PATH. Prefer the running kernel's module interfaces,
+        then inspect module files and Debian package state.
+        """
+        if Path("/sys/module/nvidia").is_dir() or Path(
+            "/proc/driver/nvidia/version"
+        ).is_file():
+            return True
+
         result = run([tool("modinfo"), "nvidia"], capture=True)
         if result.returncode == 0:
             return True
-        return bool(list(Path("/lib/modules").glob("*/kernel/drivers/video/nvidia*")))
+        module_paths = (
+            Path("/lib/modules").glob("*/updates/dkms/nvidia*.ko*"),
+            Path("/lib/modules").glob("*/kernel/drivers/video/nvidia*.ko*"),
+        )
+        if any(next(paths, None) is not None for paths in module_paths):
+            return True
+
+        result = run([
+            tool("dpkg-query"), "-W", "-f=${db:Status-Abbrev}",
+            "nvidia-driver", "nvidia-tesla-535-driver",
+            "nvidia-legacy-470xx-driver", "nvidia-legacy-390xx-driver",
+            "nvidia-legacy-340xx-driver",
+        ], capture=True)
+        return result.returncode == 0 and "ii " in result.stdout
 
     def kernel(self) -> str:
         return run(["uname", "-r"], capture=True).stdout.strip()
@@ -346,21 +364,20 @@ def install_packages(log: Log, packages: tuple[str, ...]) -> bool:
 # --- KMS yapilandirmasi ------------------------------------------------------
 
 
-def write_kms_config(log: Log) -> bool:
-    """`nvidia_drm modeset=1 fbdev=1` yaz. NVIDIA 495+ icin ZORUNLU.
-
-    Bu dosya olmadan surucu yuklenir ama X/Wayland onu kullanamaz ve masaustu
-    yazilim render'a (llvmpipe) duser - yani kart kurulu olmasina ragmen
-    'calismiyor' gorunur. Bu, bu scriptin onledigi ana tuzaktir.
-    """
+def write_kms_config(log: Log, hybrid: bool) -> bool:
+    """Gerekli KMS secenegini, fbdev'i yalnizca hibrit sistemde yazar."""
     try:
         MODPROBE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        MODPROBE_PATH.write_text(MODPROBE_TEXT, encoding="utf-8")
+        fbdev = " fbdev=1" if hybrid else ""
+        MODPROBE_PATH.write_text(
+            MODPROBE_TEXT.format(fbdev=fbdev), encoding="utf-8"
+        )
         MODPROBE_PATH.chmod(0o644)
     except OSError as error:
         log.warn(f"modprobe yapilandirmasi yazilamadi: {error}")
         return False
-    log.detail(f"yazildi: {MODPROBE_PATH} (nvidia_drm modeset=1 fbdev=1)")
+    options = "modeset=1" + (" fbdev=1" if hybrid else "")
+    log.detail(f"yazildi: {MODPROBE_PATH} (nvidia_drm {options})")
     return True
 
 
@@ -389,6 +406,32 @@ def remove_kms_config(log: Log) -> None:
         log.warn(f"silinemedi: {error}")
 
 
+def remove_stale_intel_modesetting_override(log: Log) -> None:
+    """NVIDIA secimi aktifken eski Intel modesetting override'ini kaldir."""
+    if not INTEL_MODESETTING_OVERRIDE.exists():
+        return
+    try:
+        text = INTEL_MODESETTING_OVERRIDE.read_text(encoding="utf-8",
+                                                   errors="replace")
+    except OSError as error:
+        log.warn(f"{INTEL_MODESETTING_OVERRIDE} okunamadi: {error}")
+        return
+
+    if 'Identifier "GnuchanOS Intel"' not in text and 'Driver "modesetting"' not in text:
+        return
+
+    backup = INTEL_MODESETTING_OVERRIDE.with_suffix(".conf.disabled")
+    try:
+        if not backup.exists():
+            shutil.copy2(INTEL_MODESETTING_OVERRIDE, backup)
+        INTEL_MODESETTING_OVERRIDE.unlink()
+        log.detail(
+            f"silindi: {INTEL_MODESETTING_OVERRIDE} (stale Intel modesetting override)"
+        )
+    except OSError as error:
+        log.warn(f"{INTEL_MODESETTING_OVERRIDE} kaldirilamadi: {error}")
+
+
 # --- kurulum -----------------------------------------------------------------
 
 
@@ -407,6 +450,10 @@ def install(log: Log, state: GpuState) -> int:
         if not install_packages(log, (DETECT_TOOL,)):
             return 1
 
+    # Gecmiste Intel modunda yazilan Xorg override'ini kaldir: bu dosya,
+    # xrandr provider ve Xft baglantisini NVIDIA yerine "modesetting"'e zorlar.
+    remove_stale_intel_modesetting_override(log)
+
     state = GpuState()
     report(log, state)
 
@@ -424,6 +471,8 @@ def install(log: Log, state: GpuState) -> int:
     # karsi derlenir. Meta paket oldugu icin her cekirdek guncellemesinde de
     # gelir; yoksa surucu bir sonraki cekirdekte derlenemez ve siyah ekran olur.
     needed = [state.recommended]
+    if state.recommended == "nvidia-driver":
+        needed.append("nvidia-vulkan-icd")
     if not package_installed(HEADERS_PACKAGE):
         needed.append(HEADERS_PACKAGE)
 
@@ -435,7 +484,7 @@ def install(log: Log, state: GpuState) -> int:
     # Paketler kuruldu; simdi KMS ayari. Bu olmadan surucu kurulu ama kullanilamaz.
     log.note()
     log.step("NVIDIA cekirdek modu (KMS) yapilandiriliyor")
-    kms_written = write_kms_config(log)
+    kms_written = write_kms_config(log, state.is_hybrid)
 
     final = GpuState()
     log.note()
@@ -447,7 +496,7 @@ def install(log: Log, state: GpuState) -> int:
         log.warn(
             "KMS ayari yazilamadi; surucu yuklenir ama X onu kullanamaz ve "
             "masaustu llvmpipe'a duser. Elle ekleyin:\n"
-            "    echo 'options nvidia_drm modeset=1 fbdev=1' | "
+            "    echo 'options nvidia_drm modeset=1' | "
             "sudo tee /etc/modprobe.d/gnuchan-nvidia.conf"
         )
 
@@ -500,7 +549,6 @@ def revert(log: Log) -> int:
 
     log.step("KMS yapilandirmasi kaldiriliyor")
     remove_kms_config(log)
-
     log.note()
     log.note("Ozel surucu kaldirildi; nouveau bir sonraki oturumda geri gelir.")
     log.note("X'i yeniden baslatin:  sudo systemctl restart gnuchandm")
@@ -512,7 +560,8 @@ def revert(log: Log) -> int:
 
 def usage() -> None:
     print(
-        "kullanim: python3 install_nvidia.py [--status | --revert]\n"
+        "kullanim: python3 install_nvidia.py "
+        "[--status | --revert]\n"
         "\n"
         "  (parametresiz)  kart icin dogru ozel surucuyu kur (KMS dahil)\n"
         "  --status        durumu yaz, hicbir sey degistirme\n"

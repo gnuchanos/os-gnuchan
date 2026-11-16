@@ -171,3 +171,30 @@ ln -sf /usr/share/zoneinfo/Europe/Istanbul /etc/localtime
 printf 'Europe/Istanbul\n' > /etc/timezone
 
 log "done"
+
+# --- xdg-desktop-portal — GTK startup timeout fix ---------------------------
+#
+# GTK her açılışta D-Bus üzerinden org.gnome.SessionManager ve
+# org.freedesktop.portal.Desktop'u arar. Bunlar ayakta değilse 30 saniyelik
+# timeout bekler. Çözüm: xdg-desktop-portal ve gtk backend'ini oturum açılışında
+# başlatmak. Bu autostart dosyası hem live hem installed sistemde çalışır;
+# GnuChanWM'in autostart listesine de eklenir.
+if [ -x /usr/libexec/xdg-desktop-portal ] &&
+   [ -x /usr/libexec/xdg-desktop-portal-gtk ]; then
+
+    # XDG autostart — masaüstü yöneticisi destekleyen her oturumda çalışır
+    install -d /etc/xdg/autostart
+    cat > /etc/xdg/autostart/xdg-portal.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=XDG Desktop Portal
+Comment=Start the XDG desktop portal and GTK backend at login
+Exec=sh -c '/usr/libexec/xdg-desktop-portal & sleep 1 && /usr/libexec/xdg-desktop-portal-gtk &'
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+    chmod 0644 /etc/xdg/autostart/xdg-portal.desktop
+    log "added /etc/xdg/autostart/xdg-portal.desktop (prevents 30s GTK startup delay)"
+else
+    log "xdg-desktop-portal not found; skipping autostart entry"
+fi

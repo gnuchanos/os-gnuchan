@@ -53,6 +53,10 @@ if [ ! -f "$SOURCE/gnuchanos-install.sh" ]; then
     log "ERROR: no $SOURCE/gnuchanos-install.sh in the image"
     exit 1
 fi
+if [ ! -f "$SOURCE/gnuchanos-gpu-kernel-args.sh" ]; then
+    log "ERROR: no $SOURCE/gnuchanos-gpu-kernel-args.sh in the image"
+    exit 1
+fi
 
 # The icon the .desktop entries point at, from the repository's own assets.
 # Placed here rather than left to another hook so this one depends on nothing.

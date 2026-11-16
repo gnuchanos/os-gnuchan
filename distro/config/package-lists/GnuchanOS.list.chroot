@@ -23,14 +23,10 @@ systemd
 systemd-sysv
 dbus
 
-# --- the boot splash. plymouth is what draws the GnuchanOS theme the Plymouth
-#     hook installs; without the daemon and its script module the hook's theme
-#     has nothing to draw it and the boot falls back to text. The initramfs
-#     tools are what put the theme inside the initramfs, where plymouth runs
-#     from before the root filesystem is mounted. ---
-plymouth
-plymouth-themes
+# --- initramfs tooling. GnuChanPlymouth runs after the root filesystem and GPU
+#     drivers are available; the standard Plymouth daemon is not used. ---
 initramfs-tools
+libdrm-dev
 # zstd is what initramfs-tools compresses the initramfs WITH when it is here,
 # and without it the build says so and falls back to gzip:
 #
@@ -323,8 +319,10 @@ firmware-misc-nonfree
 #                            graphics; older Intel (965GM and the like) needs
 #                            none.
 firmware-amd-graphics
-# firmware-nvidia-graphics and firmware-intel-graphics are trixie-only names;
-# bookworm provides them via firmware-linux-nonfree instead.
+firmware-intel-graphics
+firmware-nvidia-graphics
+# Debian 13 splits these vendor firmware packages; firmware-linux-nonfree
+# remains for firmware not covered by the vendor-specific packages.
 firmware-linux-nonfree
 # The GPU-side userspace. libgl1-mesa-dri (already listed) is the OpenGL
 # driver for every vendor; these three are the Vulkan loader and the per-vendor
@@ -332,6 +330,11 @@ firmware-linux-nonfree
 # finds it instead of falling back to OpenGL or failing.
 libvulkan1
 mesa-vulkan-drivers
+# nvidia-vulkan-icd is NOT listed here: it depends on the proprietary NVIDIA
+# driver libraries, which the live ISO does not carry (the ISO boots with
+# nouveau). The 0350-gpu-drivers hook stages it into the driver pool so it is
+# installed alongside the proprietary driver when the user selects NVIDIA at
+# boot time or runs install_nvidia.py.
 
 # --- the torrent client and its bindings, from dotfile/Install_Software.py.
 #     deluge is the client, and its daemon (deluged) and web UI ship inside it;

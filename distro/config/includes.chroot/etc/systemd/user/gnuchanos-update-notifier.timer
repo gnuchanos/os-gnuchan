@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for Debian updates
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=3h
+Persistent=true
+Unit=gnuchanos-update-notifier.service
+
+[Install]
+WantedBy=default.target

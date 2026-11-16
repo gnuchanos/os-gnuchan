@@ -20,21 +20,35 @@ is_buildable_checkout() {
         [ -f "$checkout/CMakeLists.txt" ]
 }
 
+checkout_names() {
+    case "$1" in
+        GCL) printf '%s\n' gcl ;;
+        GnuChanBluetooth) printf '%s\n' gnuchanbluetooth GnuChanBluetooth ;;
+        GnuChanRunner) printf '%s\n' gnuchanrunner GnuChanRunner ;;
+        GnuChanSettings) printf '%s\n' gnuchansettings GnuChanSettings ;;
+        GnuChanSound) printf '%s\n' gnuchansound Gnuchansound GnuChanSound ;;
+        GnuChanTop) printf '%s\n' gnuchantop Gnuchantop GnuChanTop ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 for PROGRAM in \
-    GnuChanGUI GnuChanBrowser GnuChanDesktop GnuChanDM GnuChanDock \
-    GnuChanFetch GnuChanFileManager GnuChanImageViewer GnuChanLockScreen \
-    GnuChanBluetooth GnuChanNetworkManager GnuChanNotification \
-    GnuChanRunner GnuChanScreenShoot GnuChanSettings \
-    GnuChanSoftwareCenter GnuChanSound GnuChanSoundRecord GnuChanSS \
-    GnuChanTerm GnuChanTop GnuChanWelcome GnuChanWifi GnuChanWM GCL; do
-    CHECKOUT_NAME=$PROGRAM
-    [ "$PROGRAM" != GCL ] || CHECKOUT_NAME=gcl
-    CHECKOUT="$OS_ROOT/../$CHECKOUT_NAME"
-    if [ -d "$CHECKOUT" ] && is_buildable_checkout "$CHECKOUT" &&
-       [ ! -d "$REPOSITORIES_DIR/$PROGRAM" ]; then
-        mkdir -p "$REPOSITORIES_DIR"
-        cp -a "$CHECKOUT" "$REPOSITORIES_DIR/$PROGRAM"
-        rm -rf "$REPOSITORIES_DIR/$PROGRAM/.git"
-        printf '==> staged local %s source from %s\n' "$PROGRAM" "$CHECKOUT"
-    fi
+    GnuChanGUI GnuChanTerm GnuChanFetch GnuChanRunner GnuChanWifi \
+    GnuChanNetworkManager GnuChanBluetooth GnuChanDock GnuChanBrowser \
+    GnuChanSS GnuChanLockScreen GnuChanNotification GnuChanScreenShoot \
+    GnuChanSoftwareCenter GnuChanImageViewer GnuChanTop GnuChanSettings \
+    GnuChanWelcome GnuChanSound GnuChanSoundRecord GnuChanDesktop \
+    GnuChanFileManager GnuChanDiskManager GCL GnuChanWM GnuChanPlymouth \
+    GnuChanDM; do
+    [ -d "$REPOSITORIES_DIR/$PROGRAM" ] && continue
+    for CHECKOUT_NAME in $(checkout_names "$PROGRAM"); do
+        CHECKOUT="$OS_ROOT/../$CHECKOUT_NAME"
+        if [ -d "$CHECKOUT" ] && is_buildable_checkout "$CHECKOUT"; then
+            mkdir -p "$REPOSITORIES_DIR"
+            cp -a "$CHECKOUT" "$REPOSITORIES_DIR/$PROGRAM"
+            rm -rf "$REPOSITORIES_DIR/$PROGRAM/.git"
+            printf '==> staged local %s source from %s\n' "$PROGRAM" "$CHECKOUT"
+            break
+        fi
+    done
 done
